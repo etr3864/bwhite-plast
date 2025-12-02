@@ -5,6 +5,7 @@
 import OpenAI from "openai";
 import fs from "fs";
 import path from "path";
+import axios from "axios";
 import { config } from "../config";
 import { logger } from "../utils/logger";
 
@@ -15,6 +16,28 @@ const openai = new OpenAI({
 // Load vision prompt
 const visionPromptPath = path.join(__dirname, "../prompts", "vision_prompt.txt");
 const visionPrompt = fs.readFileSync(visionPromptPath, "utf8");
+
+/**
+ * Download image and convert to base64
+ */
+async function downloadImageAsBase64(imageUrl: string): Promise<string | null> {
+  try {
+    const response = await axios.get(imageUrl, {
+      responseType: "arraybuffer",
+      timeout: 10000, // 10 second timeout
+    });
+
+    const base64 = Buffer.from(response.data, "binary").toString("base64");
+    const mimeType = response.headers["content-type"] || "image/jpeg";
+
+    return `data:${mimeType};base64,${base64}`;
+  } catch (error) {
+    logger.error("Failed to download image", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
 
 /**
  * Analyze image using GPT-4 Vision
@@ -29,6 +52,14 @@ export async function analyzeImage(
   try {
     logger.info("🖼️  Analyzing image...");
 
+    // Download image and convert to base64
+    const base64Image = await downloadImageAsBase64(imageUrl);
+
+    if (!base64Image) {
+      logger.error("❌ Failed to download image");
+      return null;
+    }
+
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
       {
         role: "user",
@@ -42,7 +73,7 @@ export async function analyzeImage(
           {
             type: "image_url",
             image_url: {
-              url: imageUrl,
+              url: base64Image, // Use base64 data URI instead of direct URL
             },
           },
         ],
