@@ -1,6 +1,5 @@
 /**
- * TTS Text Normalizer (AI Micro-Module)
- * Converts chat text to TTS-optimized Hebrew
+ * TTS Text Normalizer
  */
 
 import { callOpenAI } from "../openai/client";
@@ -23,15 +22,7 @@ Rules:
 
 Return ONLY the normalized text, nothing else.`;
 
-/**
- * Normalize text for TTS using AI
- * Fast, intelligent conversion for Hebrew speech
- * @param text - Original chat text
- * @returns Normalized text ready for TTS
- */
 export async function normalizeForTTS(text: string): Promise<string> {
-  const startTime = Date.now();
-
   try {
     const messages = [
       {
@@ -45,54 +36,34 @@ export async function normalizeForTTS(text: string): Promise<string> {
     ];
 
     const normalized = await callOpenAI(messages, {
-      model: "gpt-4o-mini", // Fast and cheap for this task
+      model: "gpt-4o-mini",
       maxTokens: 300,
-      temperature: 0.3, // Low temp for consistency
+      temperature: 0.3,
     });
 
-    const durationMs = Date.now() - startTime;
-
     if (!normalized) {
-      logger.warn("⚠️  AI normalization empty - using basic cleanup");
       return basicNormalization(text);
     }
 
-    logger.info("✅ Text normalized", {
-      chars: `${text.length} → ${normalized.length}`,
-      time: `${durationMs}ms`,
-    });
-
     return normalized.trim();
   } catch (error) {
-    const durationMs = Date.now() - startTime;
-
-    logger.warn("⚠️  Normalization failed - using basic cleanup", {
+    logger.warn("Normalization failed, using basic cleanup", {
       error: error instanceof Error ? error.message : String(error),
-      durationMs,
     });
 
-    // Fallback: Basic cleanup if AI fails
     return basicNormalization(text);
   }
 }
 
-/**
- * Fallback: Basic text cleanup without AI
- * Used when AI normalization fails
- */
 function basicNormalization(text: string): string {
   return (
     text
-      // Remove emojis (basic regex)
       .replace(/[\u{1F600}-\u{1F64F}]/gu, "")
       .replace(/[\u{1F300}-\u{1F5FF}]/gu, "")
       .replace(/[\u{1F680}-\u{1F6FF}]/gu, "")
       .replace(/[\u{2600}-\u{26FF}]/gu, "")
-      // Remove special symbols
       .replace(/[*_~`]/g, "")
-      // Clean whitespace
       .replace(/\s+/g, " ")
       .trim()
   );
 }
-

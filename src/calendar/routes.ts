@@ -19,10 +19,6 @@ import { getRedis } from "../db/redis";
 
 const router = Router();
 
-/**
- * Add meeting info to chat history
- * This allows the AI to know about scheduled meetings
- */
 async function addMeetingToHistory(meeting: Meeting): Promise<void> {
   try {
     const redis = getRedis();
@@ -32,57 +28,34 @@ async function addMeetingToHistory(meeting: Meeting): Promise<void> {
     const historyData = await redis.get(chatKey);
     
     if (!historyData) {
-      // No chat history yet - skip
       return;
     }
 
     const history = JSON.parse(historyData);
     
-    // Format the meeting info in Hebrew
     const firstName = getFirstName(meeting.name);
     const dateTime = formatMeetingDateTime(meeting.date, meeting.time);
     const meetingInfo = `${firstName} קבע/ה פגישת ייעוץ ${dateTime}`;
 
-    // Add as system message
     history.push({
       role: "system",
       content: meetingInfo,
       timestamp: Date.now(),
     });
 
-    // Save back to Redis
     const ttlSeconds = await redis.ttl(chatKey);
     if (ttlSeconds > 0) {
       await redis.setex(chatKey, ttlSeconds, JSON.stringify(history));
-      logger.info("📝 Meeting added to chat history", {
-        phone: meeting.phone,
-        info: meetingInfo,
-      });
     }
   } catch (error) {
-    logger.warn("⚠️  Failed to add meeting to history", {
+    logger.warn("Failed to add meeting to history", {
       error: error instanceof Error ? error.message : String(error),
     });
   }
 }
 
-/**
- * POST /calendar/meeting
- * Receive meeting from n8n automation
- * 
- * Expected body (array of meetings):
- * [
- *   {
- *     "customer_name": "איתן טורגמן",
- *     "customer_phone": "0523006544",
- *     "meeting_date": "2025-12-03",
- *     "meeting_time": "15:50"
- *   }
- * ]
- */
 router.post("/meeting", async (req: Request, res: Response) => {
   try {
-    // Handle both array and single object
     const meetings = Array.isArray(req.body) ? req.body : [req.body];
 
     if (meetings.length === 0) {
@@ -92,20 +65,17 @@ router.post("/meeting", async (req: Request, res: Response) => {
       } as MeetingResponse);
     }
 
-    // Process first meeting (in case array has multiple)
     const incomingMeeting = meetings[0] as Partial<IncomingMeeting>;
 
-    // Validate meeting data
     const validation = validateMeeting(incomingMeeting);
     if (!validation.valid) {
-      logger.warn("⚠️  Invalid meeting data", { error: validation.error });
+      logger.warn("Invalid meeting data", { error: validation.error });
       return res.status(400).json({
         status: "error",
         message: validation.error,
       } as MeetingResponse);
     }
 
-    // Normalize and prepare meeting object
     const phone = normalizePhone(incomingMeeting.customer_phone!);
     const name = incomingMeeting.customer_name?.trim() || "לקוח";
 
@@ -117,7 +87,6 @@ router.post("/meeting", async (req: Request, res: Response) => {
       createdAt: Date.now(),
     };
 
-    // Save to Redis
     const saved = await saveMeeting(meeting);
 
     if (!saved) {
@@ -127,17 +96,14 @@ router.post("/meeting", async (req: Request, res: Response) => {
       } as MeetingResponse);
     }
 
-    logger.info("✅ Meeting received and saved", {
+    logger.info("Meeting saved", {
       phone: meeting.phone,
       name: meeting.name,
       date: meeting.date,
       time: meeting.time,
     });
 
-    // Add meeting info to chat history (async - don't wait)
     void addMeetingToHistory(meeting);
-
-    // Send confirmation message to customer (async - don't wait)
     void sendMeetingConfirmation(meeting);
 
     return res.status(200).json({
@@ -147,7 +113,7 @@ router.post("/meeting", async (req: Request, res: Response) => {
     } as MeetingResponse);
 
   } catch (error) {
-    logger.error("❌ Error processing meeting", {
+    logger.error("Error processing meeting", {
       error: error instanceof Error ? error.message : String(error),
     });
 
@@ -158,10 +124,6 @@ router.post("/meeting", async (req: Request, res: Response) => {
   }
 });
 
-/**
- * GET /calendar/meeting/:phone
- * Get meeting for specific phone number
- */
 router.get("/meeting/:phone", async (req: Request, res: Response) => {
   try {
     const phone = normalizePhone(req.params.phone);
@@ -181,7 +143,7 @@ router.get("/meeting/:phone", async (req: Request, res: Response) => {
     } as MeetingResponse);
 
   } catch (error) {
-    logger.error("❌ Error retrieving meeting", {
+    logger.error("Error retrieving meeting", {
       error: error instanceof Error ? error.message : String(error),
     });
 
@@ -192,10 +154,6 @@ router.get("/meeting/:phone", async (req: Request, res: Response) => {
   }
 });
 
-/**
- * DELETE /calendar/meeting/:phone
- * Delete meeting for specific phone number
- */
 router.delete("/meeting/:phone", async (req: Request, res: Response) => {
   try {
     const phone = normalizePhone(req.params.phone);
@@ -214,7 +172,7 @@ router.delete("/meeting/:phone", async (req: Request, res: Response) => {
     } as MeetingResponse);
 
   } catch (error) {
-    logger.error("❌ Error deleting meeting", {
+    logger.error("Error deleting meeting", {
       error: error instanceof Error ? error.message : String(error),
     });
 
@@ -225,14 +183,6 @@ router.delete("/meeting/:phone", async (req: Request, res: Response) => {
   }
 });
 
-// ===============================================
-// 🧪 TEST ENDPOINTS (for testing reminders)
-// ===============================================
-
-/**
- * POST /calendar/test/day-reminder/:phone
- * Send test day-of-meeting reminder immediately
- */
 router.post("/test/day-reminder/:phone", async (req: Request, res: Response) => {
   try {
     const phone = normalizePhone(req.params.phone);
@@ -250,7 +200,7 @@ router.post("/test/day-reminder/:phone", async (req: Request, res: Response) => 
       });
     }
   } catch (error) {
-    logger.error("❌ Error sending test day reminder", {
+    logger.error("Error sending test day reminder", {
       error: error instanceof Error ? error.message : String(error),
     });
 
@@ -261,10 +211,6 @@ router.post("/test/day-reminder/:phone", async (req: Request, res: Response) => 
   }
 });
 
-/**
- * POST /calendar/test/before-reminder/:phone
- * Send test before-meeting reminder immediately
- */
 router.post("/test/before-reminder/:phone", async (req: Request, res: Response) => {
   try {
     const phone = normalizePhone(req.params.phone);
@@ -283,7 +229,7 @@ router.post("/test/before-reminder/:phone", async (req: Request, res: Response) 
       });
     }
   } catch (error) {
-    logger.error("❌ Error sending test before reminder", {
+    logger.error("Error sending test before reminder", {
       error: error instanceof Error ? error.message : String(error),
     });
 
@@ -294,10 +240,6 @@ router.post("/test/before-reminder/:phone", async (req: Request, res: Response) 
   }
 });
 
-/**
- * GET /calendar/test/list-meetings
- * List all meetings in Redis (for debugging)
- */
 router.get("/test/list-meetings", async (_req: Request, res: Response) => {
   try {
     const meetings = await listAllMeetings();
@@ -308,7 +250,7 @@ router.get("/test/list-meetings", async (_req: Request, res: Response) => {
       meetings,
     });
   } catch (error) {
-    logger.error("❌ Error listing meetings", {
+    logger.error("Error listing meetings", {
       error: error instanceof Error ? error.message : String(error),
     });
 
@@ -320,4 +262,3 @@ router.get("/test/list-meetings", async (_req: Request, res: Response) => {
 });
 
 export default router;
-

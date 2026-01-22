@@ -1,6 +1,5 @@
 /**
  * Redis Client
- * Handles connection to Redis for persistent conversation storage
  */
 
 import Redis from "ioredis";
@@ -9,17 +8,14 @@ import { logger } from "../utils/logger";
 
 let redis: Redis | null = null;
 
-/**
- * Initialize Redis connection
- */
 export function initRedis(): Redis | null {
   if (!config.redisEnabled) {
-    logger.info("📦 Redis disabled - using in-memory storage");
+    logger.info("Redis disabled - using in-memory storage");
     return null;
   }
 
   if (!config.redisHost || !config.redisPassword) {
-    logger.warn("⚠️  Redis credentials missing - falling back to in-memory storage");
+    logger.warn("Redis credentials missing - using in-memory storage");
     return null;
   }
 
@@ -36,46 +32,36 @@ export function initRedis(): Redis | null {
     });
 
     redis.on("connect", () => {
-      logger.info("✅ Redis connected", {
+      logger.info("Redis connected", {
         host: config.redisHost,
         port: config.redisPort,
       });
     });
 
     redis.on("error", (error) => {
-      logger.error("❌ Redis connection error", {
-        error: error.message,
-      });
+      logger.error("Redis error", { error: error.message });
     });
 
     redis.on("close", () => {
-      logger.warn("⚠️  Redis connection closed");
+      logger.warn("Redis connection closed");
     });
 
     return redis;
   } catch (error) {
-    logger.error("❌ Failed to initialize Redis", {
+    logger.error("Failed to initialize Redis", {
       error: error instanceof Error ? error.message : String(error),
     });
     return null;
   }
 }
 
-/**
- * Get Redis client instance
- */
 export function getRedis(): Redis | null {
   return redis;
 }
 
-/**
- * Close Redis connection
- */
 export async function closeRedis(): Promise<void> {
   if (redis) {
     await redis.quit();
     redis = null;
-    logger.info("🔌 Redis connection closed");
   }
 }
-

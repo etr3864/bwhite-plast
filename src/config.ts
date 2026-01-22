@@ -71,6 +71,12 @@ export const config = {
 
   // Debug mode (skip webhook verification)
   skipWebhookVerification: process.env.SKIP_WEBHOOK_VERIFICATION === "true",
+
+  // Conversation Summary
+  summaryEnabled: process.env.SUMMARY_ENABLED === "true",
+  summaryDelayMinutes: parseInt(process.env.SUMMARY_DELAY_MINUTES || "30", 10),
+  summaryMinMessages: parseInt(process.env.SUMMARY_MIN_MESSAGES || "5", 10),
+  summaryWebhookUrl: process.env.SUMMARY_WEBHOOK_URL || "",
 };
 
 // Validate required environment variables

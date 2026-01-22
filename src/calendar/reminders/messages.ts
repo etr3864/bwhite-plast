@@ -24,7 +24,7 @@ function formatTime(time: string): string {
 export function buildDayReminderMessage(meeting: Meeting): string {
   const firstName = getFirstName(meeting.name);
   const time = formatTime(meeting.time);
-  return `${firstName}, מזכירה לך על השיחה שלך ושל היועץ שקבעת היום בשעה ${time}, מקווה שאתה מתרגש כמוני 😉`;
+  return `אהלן ${firstName}, מזכירה לך על הפגישה היום אצל ד״ר מיקי באוסישקין 91 רמת השרון בשעה ${time}, מחכים לך, נסיעה טובה!`;
 }
 
 /**
@@ -36,6 +36,6 @@ export function buildDayReminderMessage(meeting: Meeting): string {
 export function buildBeforeReminderMessage(meeting: Meeting, minutesBefore: number): string {
   const firstName = getFirstName(meeting.name);
   const time = formatTime(meeting.time);
-  return `${firstName} מה קורה? בעוד ${minutesBefore} דקות (בשעה ${time}) תקבל שיחה מאחד היועצים שלנו, שיהיה בהצלחה!`;
+  return `היי ${firstName}, זאת שוב לין מהמרפאה של ד״ר מיקי בבייב, רק מוודאת שאתה בדרך לפגישה שלנו שמתחילה בעוד ${minutesBefore} דקות בשעה ${time}, נתראה!`;
 }
 

@@ -1,6 +1,5 @@
 /**
  * Test Reminders
- * Manual testing endpoint to verify reminders work
  */
 
 import { getRedis } from "../../db/redis";
@@ -9,23 +8,17 @@ import { logger } from "../../utils/logger";
 import { Meeting } from "../types";
 import { buildDayReminderMessage, buildBeforeReminderMessage } from "./messages";
 
-/**
- * Convert Israeli phone format to international
- */
 function toInternationalFormat(phone: string): string {
   if (phone.startsWith("972")) return phone;
   if (phone.startsWith("0")) return "972" + phone.substring(1);
   return "972" + phone;
 }
 
-/**
- * Send a test day reminder for a specific phone
- */
 export async function sendTestDayReminder(phone: string): Promise<boolean> {
   try {
     const redis = getRedis();
     if (!redis) {
-      logger.error("❌ Redis not available");
+      logger.error("Redis not available");
       return false;
     }
 
@@ -33,7 +26,7 @@ export async function sendTestDayReminder(phone: string): Promise<boolean> {
     const data = await redis.get(key);
 
     if (!data) {
-      logger.error("❌ No meeting found for this phone", { phone });
+      logger.error("No meeting found", { phone });
       return false;
     }
 
@@ -41,33 +34,28 @@ export async function sendTestDayReminder(phone: string): Promise<boolean> {
     const message = buildDayReminderMessage(meeting);
     const internationalPhone = toInternationalFormat(phone);
 
-    logger.info("📨 Sending TEST day reminder", { phone, name: meeting.name });
-    
     const sent = await sendTextMessage(internationalPhone, message);
 
     if (sent) {
-      logger.info("✅ TEST day reminder sent successfully");
+      logger.info("Test day reminder sent", { phone });
       return true;
     } else {
-      logger.error("❌ Failed to send TEST day reminder");
+      logger.error("Failed to send test day reminder", { phone });
       return false;
     }
   } catch (error) {
-    logger.error("❌ Error sending test reminder", {
+    logger.error("Error sending test reminder", {
       error: error instanceof Error ? error.message : String(error),
     });
     return false;
   }
 }
 
-/**
- * Send a test before-meeting reminder for a specific phone
- */
 export async function sendTestBeforeReminder(phone: string, minutesBefore: number = 45): Promise<boolean> {
   try {
     const redis = getRedis();
     if (!redis) {
-      logger.error("❌ Redis not available");
+      logger.error("Redis not available");
       return false;
     }
 
@@ -75,7 +63,7 @@ export async function sendTestBeforeReminder(phone: string, minutesBefore: numbe
     const data = await redis.get(key);
 
     if (!data) {
-      logger.error("❌ No meeting found for this phone", { phone });
+      logger.error("No meeting found", { phone });
       return false;
     }
 
@@ -83,32 +71,23 @@ export async function sendTestBeforeReminder(phone: string, minutesBefore: numbe
     const message = buildBeforeReminderMessage(meeting, minutesBefore);
     const internationalPhone = toInternationalFormat(phone);
 
-    logger.info("📨 Sending TEST before-meeting reminder", { 
-      phone, 
-      name: meeting.name,
-      minutesBefore 
-    });
-    
     const sent = await sendTextMessage(internationalPhone, message);
 
     if (sent) {
-      logger.info("✅ TEST before-meeting reminder sent successfully");
+      logger.info("Test before-meeting reminder sent", { phone, minutesBefore });
       return true;
     } else {
-      logger.error("❌ Failed to send TEST before-meeting reminder");
+      logger.error("Failed to send test before-meeting reminder", { phone });
       return false;
     }
   } catch (error) {
-    logger.error("❌ Error sending test reminder", {
+    logger.error("Error sending test reminder", {
       error: error instanceof Error ? error.message : String(error),
     });
     return false;
   }
 }
 
-/**
- * List all meetings in Redis (for debugging)
- */
 export async function listAllMeetings(): Promise<Meeting[]> {
   try {
     const redis = getRedis();
@@ -128,10 +107,9 @@ export async function listAllMeetings(): Promise<Meeting[]> {
 
     return meetings;
   } catch (error) {
-    logger.error("❌ Error listing meetings", {
+    logger.error("Error listing meetings", {
       error: error instanceof Error ? error.message : String(error),
     });
     return [];
   }
 }
-

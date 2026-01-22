@@ -1,6 +1,5 @@
 /**
  * ElevenLabs TTS Integration
- * Converts normalized Hebrew text to audio
  */
 
 import axios from "axios";
@@ -8,16 +7,9 @@ import { config } from "../config";
 import { logger } from "../utils/logger";
 
 const ELEVENLABS_BASE_URL = "https://api.elevenlabs.io/v1";
-const TTS_TIMEOUT_MS = 30000; // 30 seconds timeout (ElevenLabs can be slow)
+const TTS_TIMEOUT_MS = 30000;
 
-/**
- * Convert text to speech using ElevenLabs API
- * @param text - Normalized Hebrew text ready for TTS
- * @returns Audio buffer (MP3 format)
- */
 export async function textToSpeech(text: string): Promise<Buffer> {
-  const startTime = Date.now();
-
   try {
     if (!config.elevenLabsApiKey || !config.elevenLabsVoiceId) {
       throw new Error("ElevenLabs API credentials not configured");
@@ -27,7 +19,7 @@ export async function textToSpeech(text: string): Promise<Buffer> {
       `${ELEVENLABS_BASE_URL}/text-to-speech/${config.elevenLabsVoiceId}`,
       {
         text,
-        model_id: config.elevenLabsModelId, // Configurable via env
+        model_id: config.elevenLabsModelId,
         voice_settings: {
           stability: 0.0,
           similarity_boost: 0.75,
@@ -45,28 +37,16 @@ export async function textToSpeech(text: string): Promise<Buffer> {
       }
     );
 
-    const audioBuffer = Buffer.from(response.data);
-    const durationMs = Date.now() - startTime;
-
-    logger.info("✅ Audio generated", {
-      size: `${Math.round(audioBuffer.length / 1024)}KB`,
-      time: `${durationMs}ms`,
-    });
-
-    return audioBuffer;
+    return Buffer.from(response.data);
   } catch (error) {
-    const durationMs = Date.now() - startTime;
-
     if (axios.isAxiosError(error)) {
-      logger.error("❌ ElevenLabs API error", {
+      logger.error("ElevenLabs API error", {
         status: error.response?.status,
         message: error.message,
-        durationMs,
       });
     } else {
-      logger.error("❌ TTS conversion failed", {
+      logger.error("TTS conversion failed", {
         error: error instanceof Error ? error.message : String(error),
-        durationMs,
       });
     }
 
@@ -74,10 +54,6 @@ export async function textToSpeech(text: string): Promise<Buffer> {
   }
 }
 
-/**
- * Get available character quota from ElevenLabs
- * Useful for monitoring API usage
- */
 export async function getCharacterQuota(): Promise<{ remaining: number; limit: number }> {
   try {
     const response = await axios.get(`${ELEVENLABS_BASE_URL}/user`, {
@@ -97,4 +73,3 @@ export async function getCharacterQuota(): Promise<{ remaining: number; limit: n
     return { remaining: 0, limit: 0 };
   }
 }
-

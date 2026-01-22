@@ -13,18 +13,14 @@ const openai = new OpenAI({
   apiKey: config.openaiApiKey,
 });
 
-// Load vision prompt
 const visionPromptPath = path.join(__dirname, "../prompts", "vision_prompt.txt");
 const visionPrompt = fs.readFileSync(visionPromptPath, "utf8");
 
-/**
- * Download image and convert to base64
- */
 async function downloadImageAsBase64(imageUrl: string): Promise<string | null> {
   try {
     const response = await axios.get(imageUrl, {
       responseType: "arraybuffer",
-      timeout: 10000, // 10 second timeout
+      timeout: 10000,
     });
 
     const base64 = Buffer.from(response.data, "binary").toString("base64");
@@ -39,24 +35,14 @@ async function downloadImageAsBase64(imageUrl: string): Promise<string | null> {
   }
 }
 
-/**
- * Analyze image using GPT-4 Vision
- * @param imageUrl Public URL of the image
- * @param caption Optional caption/text sent with the image
- * @returns Analysis/description of the image
- */
 export async function analyzeImage(
   imageUrl: string,
   caption?: string
 ): Promise<string | null> {
   try {
-    logger.info("🖼️  Analyzing image...");
-
-    // Download image and convert to base64
     const base64Image = await downloadImageAsBase64(imageUrl);
 
     if (!base64Image) {
-      logger.error("❌ Failed to download image");
       return null;
     }
 
@@ -73,7 +59,7 @@ export async function analyzeImage(
           {
             type: "image_url",
             image_url: {
-              url: base64Image, // Use base64 data URI instead of direct URL
+              url: base64Image,
             },
           },
         ],
@@ -81,7 +67,7 @@ export async function analyzeImage(
     ];
 
     const response = await openai.chat.completions.create({
-      model: "gpt-4o", // GPT-4 Vision model
+      model: "gpt-4o",
       messages,
       max_completion_tokens: 500,
     });
@@ -89,17 +75,15 @@ export async function analyzeImage(
     const analysis = response.choices[0]?.message?.content;
 
     if (!analysis) {
-      logger.warn("⚠️  Vision API returned empty analysis");
+      logger.warn("Vision API returned empty");
       return null;
     }
 
-    logger.info(`📸 Analysis: "${analysis.substring(0, 100)}..."`);
     return analysis;
   } catch (error) {
-    logger.error("❌ Image analysis failed", {
+    logger.error("Image analysis failed", {
       error: error instanceof Error ? error.message : String(error),
     });
     return null;
   }
 }
-

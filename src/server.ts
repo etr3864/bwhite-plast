@@ -10,6 +10,7 @@ import { handleWhatsAppWebhook } from "./wa/webhookHandler";
 import { initRedis, closeRedis, getRedis } from "./db/redis";
 import calendarRoutes from "./calendar/routes";
 import { startMeetingReminderScheduler } from "./calendar/reminders/scheduler";
+import { preloadKnowledge } from "./services/ragService";
 
 const app = express();
 
@@ -89,6 +90,21 @@ app.post("/webhook", (req: Request, res: Response) => {
 });
 
 // 404 handler
+// Test endpoint for summary (manual trigger)
+app.post("/test/summary/:phone", async (req: Request, res: Response) => {
+  try {
+    const { generateAndSendSummary } = await import("./services/summaryService");
+    const phone = req.params.phone.replace(/^0/, "972");
+    await generateAndSendSummary(phone);
+    res.json({ status: "ok", message: "Summary triggered", phone });
+  } catch (error) {
+    res.status(500).json({ 
+      status: "error", 
+      message: error instanceof Error ? error.message : String(error) 
+    });
+  }
+});
+
 app.use((req: Request, res: Response) => {
   logger.warn(`[SERVER] 404 - ${req.method} ${req.path}`);
   res.status(404).json({
@@ -131,6 +147,9 @@ app.listen(config.port, () => {
   } else {
     console.log(`  Storage: In-Memory (not persistent)`);
   }
+
+  // Preload RAG knowledge base
+  preloadKnowledge();
   
   console.log("=".repeat(60) + "\n");
 

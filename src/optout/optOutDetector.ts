@@ -1,6 +1,5 @@
 /**
  * AI-powered Opt-Out Detection
- * Detects if a customer wants to unsubscribe from messages
  */
 
 import { askOpenAI } from "../openai/client";
@@ -42,15 +41,8 @@ Return ONLY valid JSON, nothing else.`,
   },
 ];
 
-/**
- * Detect if message is an opt-out request using AI
- */
 export async function detectOptOut(message: string): Promise<OptOutDetection> {
-  const startTime = Date.now();
-  
   try {
-    logger.info("🔍 Checking for opt-out request...");
-
     const response = await askOpenAI([
       ...OPT_OUT_DETECTION_PROMPT,
       {
@@ -63,36 +55,26 @@ export async function detectOptOut(message: string): Promise<OptOutDetection> {
       throw new Error("No response from AI");
     }
 
-    // Parse JSON response
     const cleaned = response.trim().replace(/```json\n?|\n?```/g, "");
     const detection: OptOutDetection = JSON.parse(cleaned);
 
-    const durationMs = Date.now() - startTime;
-
     if (detection.isOptOut) {
-      logger.info("🚫 Opt-out request detected!", {
+      logger.info("Opt-out detected", {
         confidence: detection.confidence,
         phrase: detection.detectedPhrase,
-        durationMs,
       });
-    } else {
-      logger.debug("✅ Not an opt-out request", { durationMs });
     }
 
     return detection;
   } catch (error) {
-    logger.warn("⚠️  Opt-out detection failed, using fallback", {
+    logger.warn("Opt-out detection failed, using fallback", {
       error: error instanceof Error ? error.message : String(error),
     });
 
-    // Fallback to simple keyword matching
     return fallbackOptOutDetection(message);
   }
 }
 
-/**
- * Fallback detection using simple keyword matching
- */
 function fallbackOptOutDetection(message: string): OptOutDetection {
   const lowerMessage = message.toLowerCase().trim();
 
@@ -113,7 +95,6 @@ function fallbackOptOutDetection(message: string): OptOutDetection {
     "די",
   ];
 
-  // Check high confidence
   for (const keyword of highConfidenceKeywords) {
     if (lowerMessage.includes(keyword)) {
       return {
@@ -124,7 +105,6 @@ function fallbackOptOutDetection(message: string): OptOutDetection {
     }
   }
 
-  // Check medium confidence
   for (const keyword of mediumConfidenceKeywords) {
     if (lowerMessage.includes(keyword) && lowerMessage.length < 20) {
       return {
@@ -140,4 +120,3 @@ function fallbackOptOutDetection(message: string): OptOutDetection {
     confidence: "high",
   };
 }
-

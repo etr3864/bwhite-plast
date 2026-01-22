@@ -1,10 +1,5 @@
 /**
  * Conversation History Manager
- *
- * - Maintains conversation history per phone number
- * - Limits history to last N messages (30-40)
- * - Handles batch processing and OpenAI communication
- * - Supports both Redis (persistent) and in-memory (fallback) storage
  */
 
 import { ChatMessage, NormalizedIncoming } from "../types/normalized";
@@ -12,30 +7,36 @@ import { config } from "../config";
 import { logger } from "../utils/logger";
 import { buildPromptMessages } from "./buildPrompt";
 import { askOpenAI } from "../openai/client";
-import { sendTextMessage } from "../wa/sendMessage";
+import { sendTextMessage, sendImageMessage, sendMedia } from "../wa/sendMessage";
 import { getRedis } from "../db/redis";
 import { handleVoiceReply } from "../voice/voiceReplyHandler";
+import { extractImages } from "../images/imageHandler";
+import { MediaService } from "../services/mediaService";
+import { resetSummaryTimer } from "../services/summaryScheduler";
 
-// In-memory conversation history per phone number (fallback)
 const conversationHistory = new Map<string, ChatMessage[]>();
 
-/**
- * Get Redis key for phone number
- */
+function getSentMediaFromHistory(history: ChatMessage[]): Set<string> {
+  const sent = new Set<string>();
+  for (const msg of history) {
+    if (msg.role === "assistant") {
+      const matches = msg.content.matchAll(/\[שלחתי (?:תמונה|מדיה): ([^\]]+)\]/g);
+      for (const match of matches) {
+        sent.add(match[1].toLowerCase().trim());
+      }
+    }
+  }
+  return sent;
+}
+
 function getRedisKey(phone: string): string {
   return `chat:${phone}`;
 }
 
-/**
- * Get Redis key for customer metadata
- */
 function getCustomerKey(phone: string): string {
   return `customer:${phone}`;
 }
 
-/**
- * Save customer metadata (name, gender) permanently
- */
 export async function saveCustomerInfo(
   phone: string,
   name: string,
@@ -47,23 +48,16 @@ export async function saveCustomerInfo(
     try {
       const key = getCustomerKey(phone);
       const customerData = JSON.stringify({ name, gender, savedAt: Date.now() });
-      
-      // Save without TTL (permanent) or with long TTL (1 year)
-      const ttlSeconds = 365 * 24 * 60 * 60; // 1 year
+      const ttlSeconds = 365 * 24 * 60 * 60;
       await redis.setex(key, ttlSeconds, customerData);
-
-      logger.info(`👤 Saved customer info: "${name}" (${gender})`);
     } catch (error) {
-      logger.warn("⚠️  Failed to save customer info to Redis", {
+      logger.warn("Failed to save customer info", {
         error: error instanceof Error ? error.message : String(error),
       });
     }
   }
 }
 
-/**
- * Get customer metadata (name, gender)
- */
 export async function getCustomerInfo(
   phone: string
 ): Promise<{ name: string; gender: string } | null> {
@@ -79,7 +73,7 @@ export async function getCustomerInfo(
         return { name: parsed.name, gender: parsed.gender };
       }
     } catch (error) {
-      logger.warn("⚠️  Failed to get customer info from Redis", {
+      logger.warn("Failed to get customer info", {
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -88,10 +82,6 @@ export async function getCustomerInfo(
   return null;
 }
 
-/**
- * Get conversation history for a phone number
- * Uses Redis if available, otherwise falls back to in-memory
- */
 export async function getHistory(phone: string): Promise<ChatMessage[]> {
   const redis = getRedis();
 
@@ -101,27 +91,21 @@ export async function getHistory(phone: string): Promise<ChatMessage[]> {
       const data = await redis.get(key);
 
       if (data) {
-        const history = JSON.parse(data) as ChatMessage[];
-        return history;
+        return JSON.parse(data) as ChatMessage[];
       }
       return [];
     } catch (error) {
-      logger.warn("⚠️  Failed to get history from Redis, using in-memory", {
+      logger.warn("Redis read failed, using memory", {
         error: error instanceof Error ? error.message : String(error),
       });
       return conversationHistory.get(phone) || [];
     }
   }
 
-  // Fallback to in-memory
   return conversationHistory.get(phone) || [];
 }
 
-/**
- * Add message to conversation history
- * Uses Redis if available, otherwise falls back to in-memory
- */
-async function addToHistory(phone: string, message: ChatMessage, shouldLog = true): Promise<void> {
+async function addToHistory(phone: string, message: ChatMessage): Promise<void> {
   const redis = getRedis();
 
   if (redis) {
@@ -131,34 +115,20 @@ async function addToHistory(phone: string, message: ChatMessage, shouldLog = tru
 
       history.push(message);
 
-      // Trim history to max size
       if (history.length > config.maxHistoryMessages) {
-        const toRemove = history.length - config.maxHistoryMessages;
-        history = history.slice(toRemove);
-
-        if (shouldLog) {
-          logger.debug("History trimmed", {
-            phone,
-            removed: toRemove,
-            remaining: history.length,
-          });
-        }
+        history = history.slice(history.length - config.maxHistoryMessages);
       }
 
-      // Save to Redis with TTL
       const ttlSeconds = config.redisTtlDays * 24 * 60 * 60;
       await redis.setex(key, ttlSeconds, JSON.stringify(history));
-
       return;
     } catch (error) {
-      logger.warn("⚠️  Failed to save to Redis, using in-memory", {
+      logger.warn("Redis write failed, using memory", {
         error: error instanceof Error ? error.message : String(error),
       });
-      // Fall through to in-memory
     }
   }
 
-  // Fallback to in-memory
   let history = conversationHistory.get(phone);
 
   if (!history) {
@@ -168,137 +138,175 @@ async function addToHistory(phone: string, message: ChatMessage, shouldLog = tru
 
   history.push(message);
 
-  // Trim history to max size
   if (history.length > config.maxHistoryMessages) {
-    const toRemove = history.length - config.maxHistoryMessages;
-    history.splice(0, toRemove);
-
-    logger.debug("History trimmed", {
-      phone,
-      removed: toRemove,
-      remaining: history.length,
-    });
+    history.splice(0, history.length - config.maxHistoryMessages);
   }
 }
 
-/**
- * Flush conversation - process batch of messages
- * This is called by bufferManager when timer expires
- */
 export async function flushConversation(
   phone: string,
   batchMessages: NormalizedIncoming[]
 ): Promise<void> {
   try {
-    // Get existing history
     const history = await getHistory(phone);
-    
-    if (history.length > 0) {
-      logger.info(`📚 Loaded ${history.length} previous messages from history`);
-    }
-    
-    logger.info(`🤖 Generating response...`);
-
-    // Build prompt messages (system + history + batch)
     const promptMessages = await buildPromptMessages(history, batchMessages, phone);
-
-    // Ask OpenAI
     const response = await askOpenAI(promptMessages);
 
     if (!response) {
-      logger.error("❌ AI failed to generate response - sending fallback");
-      
-      // Send fallback response to customer instead of leaving them hanging
+      logger.error("AI response failed", { phone });
       const fallbackResponse = "מצטער, נתקלתי בקושי טכני זמני. אנא נסה שוב עוד רגע.";
-      const sent = await sendTextMessage(phone, fallbackResponse);
-      
-      if (sent) {
-        logger.info("💬 Sent fallback response due to AI failure");
-      }
-      
+      await sendTextMessage(phone, fallbackResponse);
       return;
     }
 
-    // Add batch messages to history as user messages
     for (const msg of batchMessages) {
       const content = formatMessageForHistory(msg);
       await addToHistory(phone, {
         role: "user",
         content,
         timestamp: msg.message.timestamp,
-      }, false); // Don't log individual saves
+      });
     }
 
-    // Add assistant response to history (always save as text, even if sent as voice)
+    resetSummaryTimer(phone);
+
+    let finalResponse = response;
+    let mediaSentCount = 0;
+    const mediaDescriptions: string[] = [];
+
+    const mediaRequests: { query: string; caption: string }[] = [];
+    const lines = response.split('\n');
+    const remainingLines: string[] = [];
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const tagMatch = line.match(/\[MEDIA:\s*(.*?)\]/i);
+
+      if (tagMatch) {
+        const query = tagMatch[1];
+        let caption = "";
+        
+        if (i + 1 < lines.length) {
+          const nextLine = lines[i + 1].trim();
+          if (nextLine && !nextLine.match(/\[MEDIA:/i)) {
+            caption = nextLine;
+            i++;
+          }
+        }
+        
+        mediaRequests.push({ query, caption });
+      } else if (line.trim()) {
+        remainingLines.push(line);
+      }
+    }
+
+    if (mediaRequests.length > 0) {
+      const alreadySent = getSentMediaFromHistory(history);
+      
+      const searchResults = await Promise.all(
+        mediaRequests.map(async (req) => {
+          const asset = await MediaService.findBestMatch(req.query);
+          return { ...req, asset };
+        })
+      );
+
+      for (const result of searchResults) {
+        if (result.asset) {
+          const descKey = result.asset.description.toLowerCase().trim();
+          if (alreadySent.has(descKey)) {
+            continue;
+          }
+
+          if (mediaSentCount > 0) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+
+          await sendMedia({
+            phone,
+            url: result.asset.url,
+            type: result.asset.type,
+            caption: result.caption || undefined,
+          });
+          
+          mediaSentCount++;
+          mediaDescriptions.push(result.asset.description);
+          alreadySent.add(descKey);
+        } else {
+          logger.warn("Media not found for query", { query: result.query });
+        }
+      }
+
+      finalResponse = remainingLines.join('\n').trim();
+    }
+
+    let historyContent = response.replace(/\[MEDIA:\s*(.*?)\]/gi, "").trim();
+    if (mediaSentCount > 0 && mediaDescriptions.length > 0) {
+      const mediaContext = mediaDescriptions.map(d => `[שלחתי תמונה: ${d}]`).join('\n');
+      historyContent = `${mediaContext}\n${historyContent}`;
+    }
+
     await addToHistory(phone, {
       role: "assistant",
-      content: response,
+      content: historyContent,
       timestamp: Date.now(),
-    }, false); // Don't log individual saves
-    
-    // Single log for all saves (calculate without re-fetching)
-    const finalHistorySize = history.length + batchMessages.length + 1;
-    logger.info(`💾 Conversation saved (${finalHistorySize} messages in history)`);
+    });
 
-    // Attempt voice reply if feature is enabled
+    const { cleanText, images } = extractImages(finalResponse);
+
     let sentAsVoice = false;
-    if (config.voiceRepliesEnabled) {
+    if (config.voiceRepliesEnabled && images.length === 0 && mediaSentCount === 0) {
       try {
-        // Detect incoming message type (for voice trigger)
         const incomingType = batchMessages[0]?.message?.type || "text";
         
         sentAsVoice = await handleVoiceReply({
           phone,
-          responseText: response,
+          responseText: cleanText,
           incomingMessageType: incomingType,
           conversationHistory: history,
         });
       } catch (error) {
-        logger.warn("Voice reply failed, falling back to text", {
+        logger.warn("Voice reply failed", {
           error: error instanceof Error ? error.message : String(error),
         });
       }
     }
 
-    // If voice was sent successfully, we're done
     if (sentAsVoice) {
-      logger.info(`🎤 Voice reply sent: "${response.substring(0, 80)}${response.length > 80 ? "..." : ""}"`);
-      console.log("─".repeat(60) + "\n");
       return;
     }
 
-    // Otherwise, send text response (normal flow or fallback)
-    const sent = await sendTextMessage(phone, response);
+    if (cleanText) {
+      const sent = await sendTextMessage(phone, cleanText);
+      if (!sent) {
+        logger.error("Failed to send message", { phone });
+      }
+    }
 
-    if (!sent) {
-      logger.error("❌ Failed to send message");
-    } else {
-      logger.info(`💬 Reply: "${response.substring(0, 80)}${response.length > 80 ? "..." : ""}"`);
-      console.log("─".repeat(60) + "\n");
+    for (const image of images) {
+      if (cleanText || images.indexOf(image) > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+      
+      const imageSent = await sendImageMessage(phone, image.key, image.caption);
+      if (!imageSent) {
+        logger.error("Failed to send image", { phone, key: image.key });
+      }
     }
   } catch (error) {
-    logger.error("Failed to flush conversation", {
-      senderPhone: phone,
+    logger.error("Flush conversation failed", {
+      phone,
       error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
     });
   }
 }
 
-/**
- * Format message for history
- * For voice/image: saves transcription/analysis (not URL)
- * For other media: saves URL if no text available
- */
 function formatMessageForHistory(msg: NormalizedIncoming): string {
   const text = msg.message.text || "";
   
-  // If we have text (transcription/analysis/regular message), use it
   if (text) {
     return text.trim();
   }
   
-  // Only if no text and there's media, mention the media URL
   if (msg.message.mediaUrl) {
     return `[מדיה: ${msg.message.mediaUrl}]`;
   }
@@ -306,10 +314,6 @@ function formatMessageForHistory(msg: NormalizedIncoming): string {
   return "";
 }
 
-/**
- * Clear history for specific phone (for testing/cleanup)
- * Uses Redis if available, otherwise falls back to in-memory
- */
 export async function clearHistory(phone: string): Promise<void> {
   const redis = getRedis();
 
@@ -317,17 +321,13 @@ export async function clearHistory(phone: string): Promise<void> {
     try {
       const key = getRedisKey(phone);
       await redis.del(key);
-      logger.debug("History cleared from Redis", { phone });
       return;
     } catch (error) {
-      logger.warn("⚠️  Failed to clear from Redis, clearing in-memory", {
+      logger.warn("Redis delete failed", {
         error: error instanceof Error ? error.message : String(error),
       });
-      // Fall through to in-memory
     }
   }
 
-  // Fallback to in-memory
   conversationHistory.delete(phone);
-  logger.debug("History cleared from memory", { phone });
 }
