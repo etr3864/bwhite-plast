@@ -8,7 +8,6 @@ import { WASendMessageResponse } from "../types/whatsapp";
 import { logger } from "../utils/logger";
 import { addHumanDelay } from "../utils/time";
 import { uploadAudioToCloudinary, deleteAudioFromCloudinary } from "../voice/cloudinaryUpload";
-import { getImage } from "../images/imageCatalog";
 
 export interface SendMediaPayload {
   phone: string;
@@ -61,62 +60,6 @@ export async function sendTextMessage(
     logger.error("Send error", {
       error: error instanceof Error ? error.message : String(error),
       phone: to,
-    });
-    return false;
-  }
-}
-
-export async function sendImageMessage(
-  to: string,
-  imageKey: string,
-  caption?: string,
-  retryCount = 0
-): Promise<boolean> {
-  const MAX_RETRIES = 3;
-  const RETRY_DELAY_MS = 5000;
-
-  try {
-    const imageInfo = getImage(imageKey);
-    const imageUrl = imageInfo?.url || imageKey;
-    const finalCaption = caption || imageInfo?.caption;
-
-    await addHumanDelay();
-
-    const formattedPhone = to.startsWith("+") ? to : `+${to}`;
-
-    const response = await axios.post<WASendMessageResponse>(
-      `${config.waSenderBaseUrl}/send-message`,
-      {
-        to: formattedPhone,
-        text: finalCaption,
-        imageUrl,
-      },
-      {
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${config.waSenderApiKey}`,
-        },
-        timeout: 30000,
-      }
-    );
-
-    if (response.data.success) {
-      return true;
-    }
-
-    logger.warn("Image send failed", { error: response.data.error, imageKey });
-    return false;
-  } catch (error) {
-    if (axios.isAxiosError(error) && error.response?.status === 429 && retryCount < MAX_RETRIES) {
-      const delay = RETRY_DELAY_MS * (retryCount + 1);
-      logger.warn("Rate limited on image, retrying", { phone: to, delay: delay / 1000 });
-      await new Promise((resolve) => setTimeout(resolve, delay));
-      return sendImageMessage(to, imageKey, caption, retryCount + 1);
-    }
-
-    logger.error("Image send error", {
-      error: error instanceof Error ? error.message : String(error),
-      imageKey,
     });
     return false;
   }

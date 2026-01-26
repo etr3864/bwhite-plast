@@ -1,6 +1,6 @@
 /**
  * Cloudinary Media Service
- * Fetches media assets from Cloudinary Asset Folder
+ * Fetches and retrieves media assets from Cloudinary
  */
 
 import { v2 as cloudinary } from "cloudinary";
@@ -9,10 +9,10 @@ import { logger } from "../utils/logger";
 import { MediaItem } from "../images/imageCatalog";
 
 const MEDIA_FOLDER = "miki-clinic";
+const CACHE_TTL_MS = 5 * 60 * 1000;
 
 let mediaCache: MediaItem[] = [];
 let lastFetch = 0;
-const CACHE_TTL_MS = 5 * 60 * 1000;
 
 cloudinary.config({
   cloud_name: config.cloudinaryCloudName,
@@ -30,33 +30,27 @@ export async function fetchMediaFromCloudinary(): Promise<MediaItem[]> {
       return [];
     }
 
-    const items: MediaItem[] = [];
-
     const result = await cloudinary.api.resources_by_asset_folder(MEDIA_FOLDER, {
       max_results: 500,
       context: true,
       tags: true,
     });
 
-    for (const resource of result.resources) {
+    const items: MediaItem[] = result.resources.map((resource: Record<string, unknown>) => {
       const type = resource.resource_type === "video" ? "video" : "image";
-      
       const context = (resource.context as Record<string, Record<string, string>> | undefined)?.custom || {};
-      const description = context.alt || context.caption || context.description || extractDescription(resource.public_id);
-      const tags = (resource.tags || []).join(" ");
-      const searchText = `${description} ${tags}`.trim();
+      const description = context.alt || context.caption || context.description || extractDescription(resource.public_id as string);
       
-      const url = type === "video" 
-        ? optimizeVideoUrl(resource.secure_url)
-        : resource.secure_url;
-      
-      items.push({ url, type, description: searchText });
-    }
+      const url = type === "video"
+        ? optimizeVideoUrl(resource.secure_url as string)
+        : resource.secure_url as string;
+
+      return { url, type, description } as MediaItem;
+    });
 
     mediaCache = items;
     lastFetch = Date.now();
-
-    logger.info("Media catalog loaded", { count: items.length, folder: MEDIA_FOLDER });
+    logger.info("Media catalog loaded", { count: items.length });
 
     return items;
   } catch (error) {
@@ -65,6 +59,44 @@ export async function fetchMediaFromCloudinary(): Promise<MediaItem[]> {
     });
     return mediaCache;
   }
+}
+
+export async function getMediaById(id: number): Promise<MediaItem | null> {
+  const catalog = await fetchMediaFromCloudinary();
+  const index = id - 1;
+  
+  if (index < 0 || index >= catalog.length) {
+    logger.warn("Invalid media ID requested", { id, catalogSize: catalog.length });
+    return null;
+  }
+  
+  const item = catalog[index];
+  logger.info("Media retrieved by ID", { 
+    id, 
+    type: item.type, 
+    description: item.description.substring(0, 50) 
+  });
+  
+  return item;
+}
+
+export async function getMediaCatalogForPrompt(): Promise<string> {
+  const catalog = await fetchMediaFromCloudinary();
+  
+  if (catalog.length === 0) {
+    logger.warn("Media catalog is empty");
+    return "";
+  }
+
+  const lines = catalog.map((item, index) => {
+    const typeLabel = item.type === "video" ? "[סרטון]" : "[תמונה]";
+    const desc = item.description.replace(/\s+/g, " ").trim();
+    return `${index + 1}. ${typeLabel} ${desc}`;
+  });
+
+  logger.info("Media catalog built for prompt", { itemCount: catalog.length });
+  
+  return lines.join("\n");
 }
 
 function extractDescription(publicId: string): string {
@@ -81,8 +113,4 @@ function optimizeVideoUrl(url: string): string {
 export async function refreshMediaCache(): Promise<void> {
   lastFetch = 0;
   await fetchMediaFromCloudinary();
-}
-
-export function getMediaCache(): MediaItem[] {
-  return mediaCache;
 }

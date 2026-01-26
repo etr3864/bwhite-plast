@@ -7,22 +7,21 @@ import { config } from "../config";
 import { logger } from "../utils/logger";
 import { buildPromptMessages } from "./buildPrompt";
 import { askOpenAI } from "../openai/client";
-import { sendTextMessage, sendImageMessage, sendMedia } from "../wa/sendMessage";
+import { sendTextMessage, sendMedia } from "../wa/sendMessage";
 import { getRedis } from "../db/redis";
 import { handleVoiceReply } from "../voice/voiceReplyHandler";
-import { extractImages } from "../images/imageHandler";
-import { MediaService } from "../services/mediaService";
+import { getMediaById } from "../services/cloudinaryMedia";
 import { resetSummaryTimer } from "../services/summaryScheduler";
 
 const conversationHistory = new Map<string, ChatMessage[]>();
 
-function getSentMediaFromHistory(history: ChatMessage[]): Set<string> {
-  const sent = new Set<string>();
+function getSentMediaIdsFromHistory(history: ChatMessage[]): Set<number> {
+  const sent = new Set<number>();
   for (const msg of history) {
     if (msg.role === "assistant") {
-      const matches = msg.content.matchAll(/\[שלחתי (?:תמונה|מדיה): ([^\]]+)\]/g);
+      const matches = msg.content.matchAll(/\[שלחתי מדיה: #(\d+)\]/g);
       for (const match of matches) {
-        sent.add(match[1].toLowerCase().trim());
+        sent.add(parseInt(match[1], 10));
       }
     }
   }
@@ -172,18 +171,18 @@ export async function flushConversation(
 
     let finalResponse = response;
     let mediaSentCount = 0;
-    const mediaDescriptions: string[] = [];
+    const sentMediaIds: number[] = [];
 
-    const mediaRequests: { query: string; caption: string }[] = [];
+    const mediaRequests: { id: number; caption: string }[] = [];
     const lines = response.split('\n');
     const remainingLines: string[] = [];
     
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      const tagMatch = line.match(/\[MEDIA:\s*(.*?)\]/i);
+      const tagMatch = line.match(/\[MEDIA:\s*(\d+)\s*\]/i);
 
       if (tagMatch) {
-        const query = tagMatch[1];
+        const id = parseInt(tagMatch[1], 10);
         let caption = "";
         
         if (i + 1 < lines.length) {
@@ -194,73 +193,99 @@ export async function flushConversation(
           }
         }
         
-        mediaRequests.push({ query, caption });
+        mediaRequests.push({ id, caption });
       } else if (line.trim()) {
         remainingLines.push(line);
       }
     }
 
     if (mediaRequests.length > 0) {
-      const alreadySent = getSentMediaFromHistory(history);
+      logger.info("Media requests detected in AI response", { 
+        count: mediaRequests.length, 
+        ids: mediaRequests.map(r => r.id) 
+      });
       
-      const searchResults = await Promise.all(
-        mediaRequests.map(async (req) => {
-          const asset = await MediaService.findBestMatch(req.query);
-          return { ...req, asset };
-        })
-      );
+      const alreadySent = getSentMediaIdsFromHistory(history);
+      logger.info("Previously sent media IDs", { ids: Array.from(alreadySent) });
 
-      for (const result of searchResults) {
-        if (result.asset) {
-          const descKey = result.asset.description.toLowerCase().trim();
-          if (alreadySent.has(descKey)) {
-            continue;
-          }
-
-          if (mediaSentCount > 0) {
-            await new Promise(resolve => setTimeout(resolve, 500));
-          }
-
-          await sendMedia({
-            phone,
-            url: result.asset.url,
-            type: result.asset.type,
-            caption: result.caption || undefined,
-          });
-          
-          mediaSentCount++;
-          mediaDescriptions.push(result.asset.description);
-          alreadySent.add(descKey);
-        } else {
-          logger.warn("Media not found for query", { query: result.query });
+      const mediaToSend: { id: number; caption: string; asset: Awaited<ReturnType<typeof getMediaById>> }[] = [];
+      
+      for (const req of mediaRequests) {
+        if (alreadySent.has(req.id)) {
+          logger.info("Skipping already sent media", { id: req.id });
+          continue;
         }
+
+        const asset = await getMediaById(req.id);
+        
+        if (!asset) {
+          logger.warn("Invalid media ID requested by AI", { id: req.id });
+          continue;
+        }
+
+        mediaToSend.push({ id: req.id, caption: req.caption, asset });
+        sentMediaIds.push(req.id);
+      }
+
+      if (sentMediaIds.length > 0) {
+        const mediaContext = sentMediaIds.map(id => `[שלחתי מדיה: #${id}]`).join('\n');
+        const historyContent = `${mediaContext}\n${response.replace(/\[MEDIA:\s*\d+\s*\]/gi, "").trim()}`;
+        
+        await addToHistory(phone, {
+          role: "assistant",
+          content: historyContent,
+          timestamp: Date.now(),
+        });
+        
+        logger.info("Saved media IDs to history before sending", { ids: sentMediaIds });
+      }
+
+      for (const item of mediaToSend) {
+        if (mediaSentCount > 0) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+
+        logger.info("Sending media", { 
+          id: item.id, 
+          type: item.asset!.type, 
+          caption: item.caption || "(no caption)",
+          phone 
+        });
+
+        await sendMedia({
+          phone,
+          url: item.asset!.url,
+          type: item.asset!.type,
+          caption: item.caption || undefined,
+        });
+        
+        mediaSentCount++;
       }
 
       finalResponse = remainingLines.join('\n').trim();
+      
+      logger.info("Media sending complete", { 
+        sentCount: mediaSentCount, 
+        sentIds: sentMediaIds 
+      });
     }
 
-    let historyContent = response.replace(/\[MEDIA:\s*(.*?)\]/gi, "").trim();
-    if (mediaSentCount > 0 && mediaDescriptions.length > 0) {
-      const mediaContext = mediaDescriptions.map(d => `[שלחתי תמונה: ${d}]`).join('\n');
-      historyContent = `${mediaContext}\n${historyContent}`;
+    if (sentMediaIds.length === 0) {
+      await addToHistory(phone, {
+        role: "assistant",
+        content: response.replace(/\[MEDIA:\s*\d+\s*\]/gi, "").trim(),
+        timestamp: Date.now(),
+      });
     }
-
-    await addToHistory(phone, {
-      role: "assistant",
-      content: historyContent,
-      timestamp: Date.now(),
-    });
-
-    const { cleanText, images } = extractImages(finalResponse);
 
     let sentAsVoice = false;
-    if (config.voiceRepliesEnabled && images.length === 0 && mediaSentCount === 0) {
+    if (config.voiceRepliesEnabled && mediaSentCount === 0) {
       try {
         const incomingType = batchMessages[0]?.message?.type || "text";
         
         sentAsVoice = await handleVoiceReply({
           phone,
-          responseText: cleanText,
+          responseText: finalResponse,
           incomingMessageType: incomingType,
           conversationHistory: history,
         });
@@ -275,21 +300,10 @@ export async function flushConversation(
       return;
     }
 
-    if (cleanText) {
-      const sent = await sendTextMessage(phone, cleanText);
+    if (finalResponse) {
+      const sent = await sendTextMessage(phone, finalResponse);
       if (!sent) {
         logger.error("Failed to send message", { phone });
-      }
-    }
-
-    for (const image of images) {
-      if (cleanText || images.indexOf(image) > 0) {
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-      }
-      
-      const imageSent = await sendImageMessage(phone, image.key, image.caption);
-      if (!imageSent) {
-        logger.error("Failed to send image", { phone, key: image.key });
       }
     }
   } catch (error) {

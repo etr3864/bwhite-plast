@@ -7,7 +7,7 @@ import { OpenAIMessage } from "../types/openai";
 import { config } from "../config";
 import { askOpenAI } from "../openai/client";
 import { saveCustomerInfo, getCustomerInfo } from "./historyManager";
-import { fetchMediaFromCloudinary } from "../services/cloudinaryMedia";
+import { getMediaCatalogForPrompt } from "../services/cloudinaryMedia";
 import { searchKnowledge, formatRagContext } from "../services/ragService";
 
 export async function buildPromptMessages(
@@ -79,30 +79,22 @@ async function buildRagContext(query: string): Promise<string | null> {
 }
 
 async function buildMediaCatalogSection(): Promise<string> {
-  const media = await fetchMediaFromCloudinary();
+  const catalogList = await getMediaCatalogForPrompt();
   
-  if (media.length === 0) return "";
-
-  const catalogItems = media.map((item, i) => {
-    // Clean up description for display
-    const cleanDesc = item.description
-      .replace(/[-_]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-    return `${i + 1}. ${cleanDesc}`;
-  }).join("\n");
+  if (!catalogList) {
+    return "";
+  }
 
   return `
 
 ---
 
-### ספריית התמונות הזמינה
+### מאגר מדיה זמין
 
-להלן רשימת התמונות שברשותך. **השתמש בפרטים האלה** כדי לדעת מה לשלוח ומה לכתוב:
+לשליחת תמונה או סרטון, כתבי [MEDIA:מספר] ובשורה הבאה caption קצר.
+בחרי **רק** מהרשימה הבאה:
 
-${catalogItems}
-
-**חשוב:** כשמבקשים תמונה, חפש לפי מילות מפתח מהתיאור (שם מפורסם, סוג טיפול).
+${catalogList}
 `;
 }
 

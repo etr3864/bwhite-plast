@@ -8,7 +8,8 @@
     "build": "tsc && cp -r src/prompts dist/",
     "start": "node dist/server.js",
     "lint": "eslint src --ext .ts",
-    "format": "prettier --write \"src/**/*.ts\""
+    "format": "prettier --write \"src/**/*.ts\"",
+    "build:knowledge": "ts-node -r dotenv/config scripts/buildKnowledge.ts"
   },
   "keywords": [
     "whatsapp",
