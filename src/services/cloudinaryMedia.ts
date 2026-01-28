@@ -36,8 +36,26 @@ export async function fetchMediaFromCloudinary(): Promise<MediaItem[]> {
       tags: true,
     });
 
-    const items: MediaItem[] = result.resources.map((resource: Record<string, unknown>) => {
-      const type = resource.resource_type === "video" ? "video" : "image";
+    const items: MediaItem[] = [];
+    
+    for (const resource of result.resources) {
+      const resourceType = resource.resource_type as string;
+      const format = (resource.format as string || "").toLowerCase();
+      
+      // Skip unsupported formats
+      if (resourceType === "raw") {
+        logger.info("Skipping raw resource", { publicId: resource.public_id });
+        continue;
+      }
+      
+      // Skip non-standard image formats that might cause issues
+      const unsupportedFormats = ["pdf", "psd", "ai", "eps", "svg"];
+      if (unsupportedFormats.includes(format)) {
+        logger.info("Skipping unsupported format", { publicId: resource.public_id, format });
+        continue;
+      }
+      
+      const type = resourceType === "video" ? "video" : "image";
       const context = (resource.context as Record<string, Record<string, string>> | undefined)?.custom || {};
       const description = context.alt || context.caption || context.description || extractDescription(resource.public_id as string);
       
@@ -45,8 +63,8 @@ export async function fetchMediaFromCloudinary(): Promise<MediaItem[]> {
         ? optimizeVideoUrl(resource.secure_url as string)
         : resource.secure_url as string;
 
-      return { url, type, description } as MediaItem;
-    });
+      items.push({ url, type, description } as MediaItem);
+    }
 
     mediaCache = items;
     lastFetch = Date.now();

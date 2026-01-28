@@ -247,7 +247,8 @@ export async function flushConversation(
 
         logger.info("Sending media", { 
           id: item.id, 
-          type: item.asset!.type, 
+          type: item.asset!.type,
+          url: item.asset!.url,
           caption: item.caption || "(no caption)",
           phone 
         });
