@@ -10,6 +10,7 @@ import { MediaItem } from "../images/imageCatalog";
 
 const MEDIA_FOLDER = "miki-clinic";
 const CACHE_TTL_MS = 5 * 60 * 1000;
+const UNSUPPORTED_FORMATS = ["pdf", "psd", "ai", "eps", "svg"];
 
 let mediaCache: MediaItem[] = [];
 let lastFetch = 0;
@@ -25,11 +26,11 @@ export async function fetchMediaFromCloudinary(): Promise<MediaItem[]> {
     return mediaCache;
   }
 
-  try {
-    if (!config.cloudinaryCloudName || !config.cloudinaryApiKey) {
-      return [];
-    }
+  if (!config.cloudinaryCloudName || !config.cloudinaryApiKey) {
+    return [];
+  }
 
+  try {
     const result = await cloudinary.api.resources_by_asset_folder(MEDIA_FOLDER, {
       max_results: 500,
       context: true,
@@ -37,28 +38,19 @@ export async function fetchMediaFromCloudinary(): Promise<MediaItem[]> {
     });
 
     const items: MediaItem[] = [];
-    
+
     for (const resource of result.resources) {
       const resourceType = resource.resource_type as string;
       const format = (resource.format as string || "").toLowerCase();
-      
-      // Skip unsupported formats
-      if (resourceType === "raw") {
-        logger.info("Skipping raw resource", { publicId: resource.public_id });
+
+      if (resourceType === "raw" || UNSUPPORTED_FORMATS.includes(format)) {
         continue;
       }
-      
-      // Skip non-standard image formats that might cause issues
-      const unsupportedFormats = ["pdf", "psd", "ai", "eps", "svg"];
-      if (unsupportedFormats.includes(format)) {
-        logger.info("Skipping unsupported format", { publicId: resource.public_id, format });
-        continue;
-      }
-      
+
       const type = resourceType === "video" ? "video" : "image";
       const context = (resource.context as Record<string, Record<string, string>> | undefined)?.custom || {};
       const description = context.alt || context.caption || context.description || extractDescription(resource.public_id as string);
-      
+
       const url = type === "video"
         ? optimizeVideoUrl(resource.secure_url as string)
         : resource.secure_url as string;
@@ -82,39 +74,29 @@ export async function fetchMediaFromCloudinary(): Promise<MediaItem[]> {
 export async function getMediaById(id: number): Promise<MediaItem | null> {
   const catalog = await fetchMediaFromCloudinary();
   const index = id - 1;
-  
+
   if (index < 0 || index >= catalog.length) {
-    logger.warn("Invalid media ID requested", { id, catalogSize: catalog.length });
+    logger.warn("Invalid media ID", { id, catalogSize: catalog.length });
     return null;
   }
-  
-  const item = catalog[index];
-  logger.info("Media retrieved by ID", { 
-    id, 
-    type: item.type, 
-    description: item.description.substring(0, 50) 
-  });
-  
-  return item;
+
+  return catalog[index];
 }
 
 export async function getMediaCatalogForPrompt(): Promise<string> {
   const catalog = await fetchMediaFromCloudinary();
-  
+
   if (catalog.length === 0) {
-    logger.warn("Media catalog is empty");
     return "";
   }
 
-  const lines = catalog.map((item, index) => {
-    const typeLabel = item.type === "video" ? "[סרטון]" : "[תמונה]";
-    const desc = item.description.replace(/\s+/g, " ").trim();
-    return `${index + 1}. ${typeLabel} ${desc}`;
-  });
-
-  logger.info("Media catalog built for prompt", { itemCount: catalog.length });
-  
-  return lines.join("\n");
+  return catalog
+    .map((item, index) => {
+      const typeLabel = item.type === "video" ? "[סרטון]" : "[תמונה]";
+      const desc = item.description.replace(/\s+/g, " ").trim();
+      return `${index + 1}. ${typeLabel} ${desc}`;
+    })
+    .join("\n");
 }
 
 function extractDescription(publicId: string): string {

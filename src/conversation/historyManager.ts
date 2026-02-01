@@ -1,5 +1,6 @@
 /**
  * Conversation History Manager
+ * Handles conversation state and message flow
  */
 
 import { ChatMessage, NormalizedIncoming } from "../types/normalized";
@@ -15,17 +16,24 @@ import { resetSummaryTimer } from "../services/summaryScheduler";
 
 const conversationHistory = new Map<string, ChatMessage[]>();
 
-function getSentMediaIdsFromHistory(history: ChatMessage[]): Set<number> {
-  const sent = new Set<number>();
+const SENT_MARKER_PATTERN = /\(שלחתי מדיה #(\d+)\)/g;
+const MEDIA_DELAY_MS = 500;
+
+function cleanMarkersForClient(text: string): string {
+  return text.replace(SENT_MARKER_PATTERN, "").replace(/\s+/g, " ").trim();
+}
+
+function getSentMediaIds(history: ChatMessage[]): Set<number> {
+  const ids = new Set<number>();
   for (const msg of history) {
     if (msg.role === "assistant") {
-      const matches = msg.content.matchAll(/\[שלחתי מדיה: #(\d+)\]/g);
+      const matches = msg.content.matchAll(SENT_MARKER_PATTERN);
       for (const match of matches) {
-        sent.add(parseInt(match[1], 10));
+        ids.add(parseInt(match[1], 10));
       }
     }
   }
-  return sent;
+  return ids;
 }
 
 function getRedisKey(phone: string): string {
@@ -42,18 +50,16 @@ export async function saveCustomerInfo(
   gender: string
 ): Promise<void> {
   const redis = getRedis();
+  if (!redis) return;
 
-  if (redis) {
-    try {
-      const key = getCustomerKey(phone);
-      const customerData = JSON.stringify({ name, gender, savedAt: Date.now() });
-      const ttlSeconds = 365 * 24 * 60 * 60;
-      await redis.setex(key, ttlSeconds, customerData);
-    } catch (error) {
-      logger.warn("Failed to save customer info", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+  try {
+    const key = getCustomerKey(phone);
+    const data = JSON.stringify({ name, gender, savedAt: Date.now() });
+    await redis.setex(key, 365 * 24 * 60 * 60, data);
+  } catch (error) {
+    logger.warn("Failed to save customer info", {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
@@ -61,24 +67,20 @@ export async function getCustomerInfo(
   phone: string
 ): Promise<{ name: string; gender: string } | null> {
   const redis = getRedis();
+  if (!redis) return null;
 
-  if (redis) {
-    try {
-      const key = getCustomerKey(phone);
-      const data = await redis.get(key);
-
-      if (data) {
-        const parsed = JSON.parse(data);
-        return { name: parsed.name, gender: parsed.gender };
-      }
-    } catch (error) {
-      logger.warn("Failed to get customer info", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+  try {
+    const data = await redis.get(getCustomerKey(phone));
+    if (!data) return null;
+    
+    const parsed = JSON.parse(data);
+    return { name: parsed.name, gender: parsed.gender };
+  } catch (error) {
+    logger.warn("Failed to get customer info", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
   }
-
-  return null;
 }
 
 export async function getHistory(phone: string): Promise<ChatMessage[]> {
@@ -86,9 +88,7 @@ export async function getHistory(phone: string): Promise<ChatMessage[]> {
 
   if (redis) {
     try {
-      const key = getRedisKey(phone);
-      const data = await redis.get(key);
-
+      const data = await redis.get(getRedisKey(phone));
       if (data) {
         return JSON.parse(data) as ChatMessage[];
       }
@@ -97,7 +97,6 @@ export async function getHistory(phone: string): Promise<ChatMessage[]> {
       logger.warn("Redis read failed, using memory", {
         error: error instanceof Error ? error.message : String(error),
       });
-      return conversationHistory.get(phone) || [];
     }
   }
 
@@ -109,17 +108,15 @@ async function addToHistory(phone: string, message: ChatMessage): Promise<void> 
 
   if (redis) {
     try {
-      const key = getRedisKey(phone);
       let history = await getHistory(phone);
-
       history.push(message);
 
       if (history.length > config.maxHistoryMessages) {
-        history = history.slice(history.length - config.maxHistoryMessages);
+        history = history.slice(-config.maxHistoryMessages);
       }
 
       const ttlSeconds = config.redisTtlDays * 24 * 60 * 60;
-      await redis.setex(key, ttlSeconds, JSON.stringify(history));
+      await redis.setex(getRedisKey(phone), ttlSeconds, JSON.stringify(history));
       return;
     } catch (error) {
       logger.warn("Redis write failed, using memory", {
@@ -129,7 +126,6 @@ async function addToHistory(phone: string, message: ChatMessage): Promise<void> 
   }
 
   let history = conversationHistory.get(phone);
-
   if (!history) {
     history = [];
     conversationHistory.set(phone, history);
@@ -140,6 +136,94 @@ async function addToHistory(phone: string, message: ChatMessage): Promise<void> 
   if (history.length > config.maxHistoryMessages) {
     history.splice(0, history.length - config.maxHistoryMessages);
   }
+}
+
+interface ParsedResponse {
+  textContent: string;
+  mediaRequests: Array<{ id: number; caption: string }>;
+}
+
+function buildHistoryContent(response: string, sentIds: number[]): string {
+  let content = response.replace(/\[MEDIA:\s*\d+\s*\]\n?/gi, "").trim();
+
+  if (sentIds.length > 0) {
+    const mediaSummary = sentIds.map(id => `(שלחתי מדיה #${id})`).join(" ");
+    content = `${mediaSummary}\n${content}`;
+  }
+
+  return content;
+}
+
+function parseAIResponse(response: string): ParsedResponse {
+  const lines = response.split('\n');
+  const textLines: string[] = [];
+  const mediaRequests: Array<{ id: number; caption: string }> = [];
+  const seenIds = new Set<number>();
+
+  const correctPattern = /\[MEDIA:\s*(\d+)\s*\]/i;
+  const wrongPattern = /\(שלחתי מדיה #(\d+)\)/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const correctMatch = line.match(correctPattern);
+    const wrongMatch = line.match(wrongPattern);
+
+    if (correctMatch || wrongMatch) {
+      const id = parseInt((correctMatch || wrongMatch)![1], 10);
+      
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+
+      let caption = "";
+      if (i + 1 < lines.length) {
+        const nextLine = lines[i + 1].trim();
+        if (nextLine && !correctPattern.test(nextLine) && !wrongPattern.test(nextLine)) {
+          caption = nextLine;
+          i++;
+        }
+      }
+
+      mediaRequests.push({ id, caption });
+    } else if (line.trim()) {
+      textLines.push(line);
+    }
+  }
+
+  return {
+    textContent: textLines.join('\n').trim(),
+    mediaRequests,
+  };
+}
+
+async function sendMediaItems(
+  phone: string,
+  requests: Array<{ id: number; caption: string }>
+): Promise<number[]> {
+  const sentIds: number[] = [];
+
+  for (const req of requests) {
+    const asset = await getMediaById(req.id);
+
+    if (!asset) {
+      logger.warn("Invalid media ID", { id: req.id });
+      continue;
+    }
+
+    if (sentIds.length > 0) {
+      await new Promise(resolve => setTimeout(resolve, MEDIA_DELAY_MS));
+    }
+
+    await sendMedia({
+      phone,
+      url: asset.url,
+      type: asset.type,
+      caption: req.caption || undefined,
+    });
+
+    sentIds.push(req.id);
+  }
+
+  return sentIds;
 }
 
 export async function flushConversation(
@@ -153,143 +237,45 @@ export async function flushConversation(
 
     if (!response) {
       logger.error("AI response failed", { phone });
-      const fallbackResponse = "מצטער, נתקלתי בקושי טכני זמני. אנא נסה שוב עוד רגע.";
-      await sendTextMessage(phone, fallbackResponse);
+      await sendTextMessage(phone, "מצטערת, נתקלתי בקושי טכני זמני. אנא נסי שוב.");
       return;
     }
 
     for (const msg of batchMessages) {
-      const content = formatMessageForHistory(msg);
       await addToHistory(phone, {
         role: "user",
-        content,
+        content: formatMessageForHistory(msg),
         timestamp: msg.message.timestamp,
       });
     }
 
     resetSummaryTimer(phone);
 
-    let finalResponse = response;
-    let mediaSentCount = 0;
-    const sentMediaIds: number[] = [];
+    const { textContent, mediaRequests } = parseAIResponse(response);
+    const alreadySent = getSentMediaIds(history);
+    const newRequests = mediaRequests.filter(r => !alreadySent.has(r.id));
 
-    const mediaRequests: { id: number; caption: string }[] = [];
-    const lines = response.split('\n');
-    const remainingLines: string[] = [];
-    
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const tagMatch = line.match(/\[MEDIA:\s*(\d+)\s*\]/i);
+    const sentIds = await sendMediaItems(phone, newRequests);
 
-      if (tagMatch) {
-        const id = parseInt(tagMatch[1], 10);
-        let caption = "";
-        
-        if (i + 1 < lines.length) {
-          const nextLine = lines[i + 1].trim();
-          if (nextLine && !nextLine.match(/\[MEDIA:/i)) {
-            caption = nextLine;
-            i++;
-          }
-        }
-        
-        mediaRequests.push({ id, caption });
-      } else if (line.trim()) {
-        remainingLines.push(line);
-      }
-    }
+    const historyContent = buildHistoryContent(response, sentIds);
+    await addToHistory(phone, {
+      role: "assistant",
+      content: historyContent,
+      timestamp: Date.now(),
+    });
 
-    if (mediaRequests.length > 0) {
-      logger.info("Media requests detected in AI response", { 
-        count: mediaRequests.length, 
-        ids: mediaRequests.map(r => r.id) 
-      });
-      
-      const alreadySent = getSentMediaIdsFromHistory(history);
-      logger.info("Previously sent media IDs", { ids: Array.from(alreadySent) });
+    const cleanText = cleanMarkersForClient(textContent);
 
-      const mediaToSend: { id: number; caption: string; asset: Awaited<ReturnType<typeof getMediaById>> }[] = [];
-      
-      for (const req of mediaRequests) {
-        if (alreadySent.has(req.id)) {
-          logger.info("Skipping already sent media", { id: req.id });
-          continue;
-        }
-
-        const asset = await getMediaById(req.id);
-        
-        if (!asset) {
-          logger.warn("Invalid media ID requested by AI", { id: req.id });
-          continue;
-        }
-
-        mediaToSend.push({ id: req.id, caption: req.caption, asset });
-        sentMediaIds.push(req.id);
-      }
-
-      if (sentMediaIds.length > 0) {
-        const mediaContext = sentMediaIds.map(id => `[שלחתי מדיה: #${id}]`).join('\n');
-        const historyContent = `${mediaContext}\n${response.replace(/\[MEDIA:\s*\d+\s*\]/gi, "").trim()}`;
-        
-        await addToHistory(phone, {
-          role: "assistant",
-          content: historyContent,
-          timestamp: Date.now(),
-        });
-        
-        logger.info("Saved media IDs to history before sending", { ids: sentMediaIds });
-      }
-
-      for (const item of mediaToSend) {
-        if (mediaSentCount > 0) {
-          await new Promise(resolve => setTimeout(resolve, 500));
-        }
-
-        logger.info("Sending media", { 
-          id: item.id, 
-          type: item.asset!.type,
-          url: item.asset!.url,
-          caption: item.caption || "(no caption)",
-          phone 
-        });
-
-        await sendMedia({
-          phone,
-          url: item.asset!.url,
-          type: item.asset!.type,
-          caption: item.caption || undefined,
-        });
-        
-        mediaSentCount++;
-      }
-
-      finalResponse = remainingLines.join('\n').trim();
-      
-      logger.info("Media sending complete", { 
-        sentCount: mediaSentCount, 
-        sentIds: sentMediaIds 
-      });
-    }
-
-    if (sentMediaIds.length === 0) {
-      await addToHistory(phone, {
-        role: "assistant",
-        content: response.replace(/\[MEDIA:\s*\d+\s*\]/gi, "").trim(),
-        timestamp: Date.now(),
-      });
-    }
-
-    let sentAsVoice = false;
-    if (config.voiceRepliesEnabled && mediaSentCount === 0) {
+    if (config.voiceRepliesEnabled && sentIds.length === 0 && cleanText) {
       try {
-        const incomingType = batchMessages[0]?.message?.type || "text";
-        
-        sentAsVoice = await handleVoiceReply({
+        const sentAsVoice = await handleVoiceReply({
           phone,
-          responseText: finalResponse,
-          incomingMessageType: incomingType,
+          responseText: cleanText,
+          incomingMessageType: batchMessages[0]?.message?.type || "text",
           conversationHistory: history,
         });
+
+        if (sentAsVoice) return;
       } catch (error) {
         logger.warn("Voice reply failed", {
           error: error instanceof Error ? error.message : String(error),
@@ -297,15 +283,8 @@ export async function flushConversation(
       }
     }
 
-    if (sentAsVoice) {
-      return;
-    }
-
-    if (finalResponse) {
-      const sent = await sendTextMessage(phone, finalResponse);
-      if (!sent) {
-        logger.error("Failed to send message", { phone });
-      }
+    if (cleanText) {
+      await sendTextMessage(phone, cleanText);
     }
   } catch (error) {
     logger.error("Flush conversation failed", {
@@ -317,14 +296,9 @@ export async function flushConversation(
 
 function formatMessageForHistory(msg: NormalizedIncoming): string {
   const text = msg.message.text || "";
-  
-  if (text) {
-    return text.trim();
-  }
-  
-  if (msg.message.mediaUrl) {
-    return `[מדיה: ${msg.message.mediaUrl}]`;
-  }
+
+  if (text) return text.trim();
+  if (msg.message.mediaUrl) return `[מדיה: ${msg.message.mediaUrl}]`;
 
   return "";
 }
@@ -334,8 +308,7 @@ export async function clearHistory(phone: string): Promise<void> {
 
   if (redis) {
     try {
-      const key = getRedisKey(phone);
-      await redis.del(key);
+      await redis.del(getRedisKey(phone));
       return;
     } catch (error) {
       logger.warn("Redis delete failed", {
