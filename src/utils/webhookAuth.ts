@@ -2,36 +2,32 @@
  * Webhook authentication utilities
  * Verifies incoming webhooks from WA Sender
  *
- * Note: WA Sender uses simple direct comparison of webhook secret,
- * not HMAC-based signature verification
+ * WA Sender uses simple direct comparison of webhook secret, not HMAC.
+ * With multi-session support, we match against any configured session's secret.
  */
 
-import { config } from "../config";
+import { getSessionBySecret, getSessionConfig } from "../config";
 import { logger } from "./logger";
 
-/**
- * Verify webhook signature - WA Sender uses direct comparison (not HMAC)
- * @param _payload Raw request body (not used in WA Sender verification)
- * @param signature Signature from X-Webhook-Signature header
- * @returns true if signature is valid
- */
-export function verifyWebhookSignature(_payload: string | Buffer, signature: string): boolean {
+export function verifyWebhookSignature(signature: string, sessionId: string): boolean {
   try {
-    // WA Sender simply compares the signature header directly to the webhook secret
-    // No HMAC or hashing involved
-    const isValid = signature === config.waSenderWebhookSecret;
+    const sessionConfig = getSessionConfig(sessionId);
 
-    if (!isValid) {
-      logger.warn("Invalid webhook signature", {
-        receivedSignature: signature,
-        expectedSecret: config.waSenderWebhookSecret,
-        match: false,
-      });
-    } else {
-      logger.debug("Webhook signature verified successfully");
+    if (sessionConfig) {
+      const isValid = signature === sessionConfig.webhookSecret;
+      if (!isValid) {
+        logger.warn("Invalid webhook signature for session", { sessionId });
+      }
+      return isValid;
     }
 
-    return isValid;
+    const matchedSession = getSessionBySecret(signature);
+    if (matchedSession) {
+      return true;
+    }
+
+    logger.warn("No matching session for webhook signature", { sessionId });
+    return false;
   } catch (error) {
     logger.error("Failed to verify webhook signature", {
       error: error instanceof Error ? error.message : String(error),

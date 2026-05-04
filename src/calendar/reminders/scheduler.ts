@@ -5,7 +5,7 @@
 import { getRedis } from "../../db/redis";
 import { sendTextMessage } from "../../wa/sendMessage";
 import { logger } from "../../utils/logger";
-import { config } from "../../config";
+import { config, getDefaultSessionId } from "../../config";
 import { Meeting } from "../types";
 import { diffInMinutes, parseTimeToDate, formatDateYMD, getNowInIsrael } from "./timeUtils";
 import { buildDayReminderMessage, buildBeforeReminderMessage } from "./messages";
@@ -46,7 +46,7 @@ async function processMeeting(key: string, meeting: Meeting): Promise<void> {
     !meeting.flags?.sentDayReminder
   ) {
     const message = buildDayReminderMessage(meeting);
-    const sent = await sendTextMessage(internationalPhone, message);
+    const sent = await sendTextMessage(internationalPhone, message, getDefaultSessionId());
 
     if (sent) {
       meeting.flags = {
@@ -67,7 +67,7 @@ async function processMeeting(key: string, meeting: Meeting): Promise<void> {
     !meeting.flags?.sentBeforeReminder
   ) {
     const message = buildBeforeReminderMessage(meeting, config.reminderMinutesBefore);
-    const sent = await sendTextMessage(internationalPhone, message);
+    const sent = await sendTextMessage(internationalPhone, message, getDefaultSessionId());
 
     if (sent) {
       meeting.flags = {

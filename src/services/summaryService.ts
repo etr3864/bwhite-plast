@@ -29,8 +29,8 @@ function loadSummaryPrompt(): string {
   }
 }
 
-export async function generateAndSendSummary(phone: string): Promise<void> {
-  const history = await getHistory(phone);
+export async function generateAndSendSummary(phone: string, sessionId?: string): Promise<void> {
+  const history = await getHistory(phone, sessionId);
   if (history.length === 0) {
     return;
   }

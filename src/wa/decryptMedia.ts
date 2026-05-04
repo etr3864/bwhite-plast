@@ -3,12 +3,20 @@
  */
 
 import axios from "axios";
-import { config } from "../config";
+import { config, getSessionConfig } from "../config";
 import { WADecryptMediaResponse, WAMessage } from "../types/whatsapp";
 import { logger } from "../utils/logger";
 
-export async function decryptMedia(message: WAMessage): Promise<string | null> {
+export async function decryptMedia(message: WAMessage, sessionId: string): Promise<string | null> {
   try {
+    const session = getSessionConfig(sessionId);
+    const apiKey = session?.apiKey || config.waSenderSessions.values().next().value?.apiKey;
+
+    if (!apiKey) {
+      logger.error("No API key for decrypt-media", { sessionId });
+      return null;
+    }
+
     const response = await axios.post<WADecryptMediaResponse>(
       `${config.waSenderBaseUrl}/decrypt-media`,
       {
@@ -22,7 +30,7 @@ export async function decryptMedia(message: WAMessage): Promise<string | null> {
       {
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${config.waSenderApiKey}`,
+          Authorization: `Bearer ${apiKey}`,
         },
         timeout: 30000,
       }

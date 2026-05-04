@@ -30,7 +30,7 @@ export async function handleVoiceReply(context: VoiceReplyContext): Promise<bool
 
     const normalizedText = await normalizeForTTS(context.responseText);
     const audioBuffer = await textToSpeech(normalizedText);
-    const sent = await sendVoiceMessage(context.phone, audioBuffer);
+    const sent = await sendVoiceMessage(context.phone, audioBuffer, context.sessionId);
 
     if (!sent) {
       logger.error("Voice send failed", { phone: context.phone });

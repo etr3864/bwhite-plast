@@ -153,13 +153,8 @@ app.listen(config.port, () => {
   
   console.log("=".repeat(60) + "\n");
 
-  // Warnings for missing configuration
-  if (!config.waSenderApiKey) {
-    logger.warn("[CONFIG] WA_SENDER_API_KEY not configured");
-  }
-  if (!config.waSenderWebhookSecret) {
-    logger.warn("[CONFIG] WA_SENDER_WEBHOOK_SECRET not configured");
-  }
+  console.log(`  Sessions: ${config.waSenderSessions.size}`);
+
   if (!config.openaiApiKey) {
     logger.warn("[CONFIG] OPENAI_API_KEY not configured");
   }

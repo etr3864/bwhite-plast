@@ -36,7 +36,12 @@ function getSentMediaIds(history: ChatMessage[]): Set<number> {
   return ids;
 }
 
-function getRedisKey(phone: string): string {
+function getRedisKey(phone: string, sessionId?: string): string {
+  if (sessionId) return `chat:${sessionId}:${phone}`;
+  return `chat:${phone}`;
+}
+
+function getLegacyRedisKey(phone: string): string {
   return `chat:${phone}`;
 }
 
@@ -83,15 +88,24 @@ export async function getCustomerInfo(
   }
 }
 
-export async function getHistory(phone: string): Promise<ChatMessage[]> {
+export async function getHistory(phone: string, sessionId?: string): Promise<ChatMessage[]> {
   const redis = getRedis();
+  const key = getRedisKey(phone, sessionId);
 
   if (redis) {
     try {
-      const data = await redis.get(getRedisKey(phone));
+      const data = await redis.get(key);
       if (data) {
         return JSON.parse(data) as ChatMessage[];
       }
+
+      if (sessionId) {
+        const legacyData = await redis.get(getLegacyRedisKey(phone));
+        if (legacyData) {
+          return JSON.parse(legacyData) as ChatMessage[];
+        }
+      }
+
       return [];
     } catch (error) {
       logger.warn("Redis read failed, using memory", {
@@ -100,15 +114,16 @@ export async function getHistory(phone: string): Promise<ChatMessage[]> {
     }
   }
 
-  return conversationHistory.get(phone) || [];
+  return conversationHistory.get(key) || [];
 }
 
-async function addToHistory(phone: string, message: ChatMessage): Promise<void> {
+async function addToHistory(phone: string, message: ChatMessage, sessionId: string): Promise<void> {
   const redis = getRedis();
+  const key = getRedisKey(phone, sessionId);
 
   if (redis) {
     try {
-      let history = await getHistory(phone);
+      let history = await getHistory(phone, sessionId);
       history.push(message);
 
       if (history.length > config.maxHistoryMessages) {
@@ -116,7 +131,7 @@ async function addToHistory(phone: string, message: ChatMessage): Promise<void> 
       }
 
       const ttlSeconds = config.redisTtlDays * 24 * 60 * 60;
-      await redis.setex(getRedisKey(phone), ttlSeconds, JSON.stringify(history));
+      await redis.setex(key, ttlSeconds, JSON.stringify(history));
       return;
     } catch (error) {
       logger.warn("Redis write failed, using memory", {
@@ -125,10 +140,10 @@ async function addToHistory(phone: string, message: ChatMessage): Promise<void> 
     }
   }
 
-  let history = conversationHistory.get(phone);
+  let history = conversationHistory.get(key);
   if (!history) {
     history = [];
-    conversationHistory.set(phone, history);
+    conversationHistory.set(key, history);
   }
 
   history.push(message);
@@ -197,7 +212,8 @@ function parseAIResponse(response: string): ParsedResponse {
 
 async function sendMediaItems(
   phone: string,
-  requests: Array<{ id: number; caption: string }>
+  requests: Array<{ id: number; caption: string }>,
+  sessionId: string
 ): Promise<number[]> {
   const sentIds: number[] = [];
 
@@ -218,6 +234,7 @@ async function sendMediaItems(
       url: asset.url,
       type: asset.type,
       caption: req.caption || undefined,
+      sessionId,
     });
 
     sentIds.push(req.id);
@@ -228,16 +245,17 @@ async function sendMediaItems(
 
 export async function flushConversation(
   phone: string,
-  batchMessages: NormalizedIncoming[]
+  batchMessages: NormalizedIncoming[],
+  sessionId: string
 ): Promise<void> {
   try {
-    const history = await getHistory(phone);
+    const history = await getHistory(phone, sessionId);
     const promptMessages = await buildPromptMessages(history, batchMessages, phone);
     const response = await askOpenAI(promptMessages);
 
     if (!response) {
-      logger.error("AI response failed", { phone });
-      await sendTextMessage(phone, "מצטערת, נתקלתי בקושי טכני זמני. אנא נסי שוב.");
+      logger.error("AI response failed", { phone, sessionId });
+      await sendTextMessage(phone, "מצטערת, נתקלתי בקושי טכני זמני. אנא נסי שוב.", sessionId);
       return;
     }
 
@@ -246,23 +264,23 @@ export async function flushConversation(
         role: "user",
         content: formatMessageForHistory(msg),
         timestamp: msg.message.timestamp,
-      });
+      }, sessionId);
     }
 
-    resetSummaryTimer(phone);
+    resetSummaryTimer(phone, sessionId);
 
     const { textContent, mediaRequests } = parseAIResponse(response);
     const alreadySent = getSentMediaIds(history);
     const newRequests = mediaRequests.filter(r => !alreadySent.has(r.id));
 
-    const sentIds = await sendMediaItems(phone, newRequests);
+    const sentIds = await sendMediaItems(phone, newRequests, sessionId);
 
     const historyContent = buildHistoryContent(response, sentIds);
     await addToHistory(phone, {
       role: "assistant",
       content: historyContent,
       timestamp: Date.now(),
-    });
+    }, sessionId);
 
     const cleanText = cleanMarkersForClient(textContent);
 
@@ -273,6 +291,7 @@ export async function flushConversation(
           responseText: cleanText,
           incomingMessageType: batchMessages[0]?.message?.type || "text",
           conversationHistory: history,
+          sessionId,
         });
 
         if (sentAsVoice) return;
@@ -284,11 +303,12 @@ export async function flushConversation(
     }
 
     if (cleanText) {
-      await sendTextMessage(phone, cleanText);
+      await sendTextMessage(phone, cleanText, sessionId);
     }
   } catch (error) {
     logger.error("Flush conversation failed", {
       phone,
+      sessionId,
       error: error instanceof Error ? error.message : String(error),
     });
   }
@@ -303,12 +323,13 @@ function formatMessageForHistory(msg: NormalizedIncoming): string {
   return "";
 }
 
-export async function clearHistory(phone: string): Promise<void> {
+export async function clearHistory(phone: string, sessionId?: string): Promise<void> {
   const redis = getRedis();
+  const key = getRedisKey(phone, sessionId);
 
   if (redis) {
     try {
-      await redis.del(getRedisKey(phone));
+      await redis.del(key);
       return;
     } catch (error) {
       logger.warn("Redis delete failed", {
@@ -317,5 +338,5 @@ export async function clearHistory(phone: string): Promise<void> {
     }
   }
 
-  conversationHistory.delete(phone);
+  conversationHistory.delete(key);
 }

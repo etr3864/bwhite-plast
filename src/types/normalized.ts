@@ -17,9 +17,10 @@ export interface NormalizedMessage {
 }
 
 export interface NormalizedIncoming {
+  sessionId: string;
   sender: NormalizedSender;
   message: NormalizedMessage;
-  rawPayload?: unknown; // Keep original payload for debugging
+  rawPayload?: unknown;
 }
 
 /**

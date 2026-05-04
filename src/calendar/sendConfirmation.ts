@@ -6,6 +6,7 @@ import { Meeting } from "./types";
 import { buildMeetingConfirmationMessage } from "./messageBuilder";
 import { sendTextMessage } from "../wa/sendMessage";
 import { logger } from "../utils/logger";
+import { getDefaultSessionId } from "../config";
 
 function toInternationalFormat(phone: string): string {
   if (phone.startsWith("972")) {
@@ -23,7 +24,7 @@ export async function sendMeetingConfirmation(meeting: Meeting): Promise<boolean
   try {
     const message = buildMeetingConfirmationMessage(meeting);
     const internationalPhone = toInternationalFormat(meeting.phone);
-    const sent = await sendTextMessage(internationalPhone, message);
+    const sent = await sendTextMessage(internationalPhone, message, getDefaultSessionId());
 
     if (sent) {
       logger.info("Meeting confirmation sent", { phone: meeting.phone });

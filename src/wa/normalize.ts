@@ -9,9 +9,10 @@ import { logger } from "../utils/logger";
 /**
  * Normalize incoming WhatsApp message to unified format
  */
-export function normalizeIncoming(message: WAMessage): NormalizedIncoming {
+export function normalizeIncoming(message: WAMessage, sessionId: string): NormalizedIncoming {
   logger.debug("Normalizing incoming message", {
     messageId: message.id,
+    sessionId,
   });
 
   // Extract message type and content
@@ -36,6 +37,7 @@ export function normalizeIncoming(message: WAMessage): NormalizedIncoming {
   }
 
   const normalized: NormalizedIncoming = {
+    sessionId,
     sender: {
       phone: message.key.cleanedSenderPn,
       name: message.pushName,
@@ -43,7 +45,7 @@ export function normalizeIncoming(message: WAMessage): NormalizedIncoming {
     message: {
       type: messageType,
       text: messageText,
-      timestamp: message.messageTimestamp * 1000, // Convert to ms
+      timestamp: message.messageTimestamp * 1000,
     },
     rawPayload: message,
   };

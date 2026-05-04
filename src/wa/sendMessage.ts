@@ -3,7 +3,7 @@
  */
 
 import axios from "axios";
-import { config } from "../config";
+import { config, getSessionConfig, WASessionConfig } from "../config";
 import { WASendMessageResponse } from "../types/whatsapp";
 import { logger } from "../utils/logger";
 import { addHumanDelay } from "../utils/time";
@@ -14,30 +14,46 @@ export interface SendMediaPayload {
   url: string;
   type: "image" | "video";
   caption?: string;
+  sessionId: string;
+}
+
+function resolveSession(sessionId: string): WASessionConfig {
+  const session = getSessionConfig(sessionId);
+  if (session) return session;
+
+  const fallback = config.waSenderSessions.values().next().value;
+  if (fallback) {
+    logger.warn("Session not found, using fallback", { sessionId });
+    return fallback;
+  }
+
+  throw new Error(`No WA session configured for: ${sessionId}`);
 }
 
 export async function sendTextMessage(
   to: string,
   text: string,
+  sessionId: string,
   retryCount = 0
 ): Promise<boolean> {
   const MAX_RETRIES = 3;
   const RETRY_DELAY_MS = 5000;
 
   try {
+    const session = resolveSession(sessionId);
     await addHumanDelay();
 
     const response = await axios.post<WASendMessageResponse>(
       `${config.waSenderBaseUrl}/send-message`,
       {
-        session: "default",
+        session: session.sessionName,
         to: to.includes("@") ? to : `${to}@s.whatsapp.net`,
         text,
       },
       {
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${config.waSenderApiKey}`,
+          Authorization: `Bearer ${session.apiKey}`,
         },
         timeout: 30000,
       }
@@ -47,14 +63,14 @@ export async function sendTextMessage(
       return true;
     }
 
-    logger.warn("Send failed", { error: response.data.error, phone: to });
+    logger.warn("Send failed", { error: response.data.error, phone: to, sessionId });
     return false;
   } catch (error) {
     if (axios.isAxiosError(error) && error.response?.status === 429 && retryCount < MAX_RETRIES) {
       const delay = RETRY_DELAY_MS * (retryCount + 1);
       logger.warn("Rate limited, retrying", { phone: to, delay: delay / 1000 });
       await new Promise((resolve) => setTimeout(resolve, delay));
-      return sendTextMessage(to, text, retryCount + 1);
+      return sendTextMessage(to, text, sessionId, retryCount + 1);
     }
 
     logger.error("Send error", {
@@ -68,6 +84,7 @@ export async function sendTextMessage(
 export async function sendVoiceMessage(
   to: string,
   audioBuffer: Buffer,
+  sessionId: string,
   retryCount = 0
 ): Promise<boolean> {
   const MAX_RETRIES = 3;
@@ -76,6 +93,7 @@ export async function sendVoiceMessage(
   let audioUrl: string | null = null;
 
   try {
+    const session = resolveSession(sessionId);
     await addHumanDelay();
 
     audioUrl = await uploadAudioToCloudinary(audioBuffer);
@@ -90,7 +108,7 @@ export async function sendVoiceMessage(
       {
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${config.waSenderApiKey}`,
+          Authorization: `Bearer ${session.apiKey}`,
         },
         timeout: 30000,
       }
@@ -115,7 +133,7 @@ export async function sendVoiceMessage(
       const delay = RETRY_DELAY_MS * (retryCount + 1);
       logger.warn("Rate limited on voice, retrying", { phone: to, delay: delay / 1000 });
       await new Promise((resolve) => setTimeout(resolve, delay));
-      return sendVoiceMessage(to, audioBuffer, retryCount + 1);
+      return sendVoiceMessage(to, audioBuffer, sessionId, retryCount + 1);
     }
 
     if (axios.isAxiosError(error)) {
@@ -144,6 +162,7 @@ export async function sendVoiceMessage(
 export async function sendMedia(payload: SendMediaPayload): Promise<boolean> {
   const MAX_RETRIES = 3;
   const RETRY_DELAY_MS = 5000;
+  const session = resolveSession(payload.sessionId);
 
   const send = async (retryCount = 0): Promise<boolean> => {
     try {
@@ -154,7 +173,7 @@ export async function sendMedia(payload: SendMediaPayload): Promise<boolean> {
         : `${payload.phone}@s.whatsapp.net`;
 
       const body: Record<string, string> = {
-        session: "default",
+        session: session.sessionName,
         to: formattedTo,
       };
 
@@ -174,7 +193,7 @@ export async function sendMedia(payload: SendMediaPayload): Promise<boolean> {
         {
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${config.waSenderApiKey}`,
+            Authorization: `Bearer ${session.apiKey}`,
           },
           timeout: 30000,
         }

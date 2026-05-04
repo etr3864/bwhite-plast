@@ -24,58 +24,57 @@ const buffers = new Map<string, MessageBuffer>();
 /**
  * Add message to buffer and start/reset timer
  */
-export function addMessageToBuffer(message: NormalizedIncoming): void {
-  const phone = message.sender.phone;
+function bufferKey(message: NormalizedIncoming): string {
+  return `${message.sessionId}:${message.sender.phone}`;
+}
 
-  // Get or create buffer for this phone
-  let buffer = buffers.get(phone);
+export function addMessageToBuffer(message: NormalizedIncoming): void {
+  const key = bufferKey(message);
+
+  let buffer = buffers.get(key);
 
   if (!buffer) {
-    // Create new buffer
     buffer = {
       messages: [],
       timer: null,
     };
-    buffers.set(phone, buffer);
+    buffers.set(key, buffer);
   }
 
-  // Add message to buffer
   buffer.messages.push(message);
 
-  // If timer is already running, just add to buffer
-  // If no timer, start new timer
   if (!buffer.timer) {
     buffer.timer = setTimeout(() => {
-      void processBuffer(phone);
+      void processBuffer(key);
     }, config.batchWindowMs);
 
-    logger.info(`⏳ Waiting ${config.batchWindowMs / 1000}s...`);
+    logger.info(`Waiting ${config.batchWindowMs / 1000}s...`);
   }
 }
 
 /**
  * Process buffer - flush messages and send to conversation handler
  */
-async function processBuffer(phone: string): Promise<void> {
-  const buffer = buffers.get(phone);
+async function processBuffer(key: string): Promise<void> {
+  const buffer = buffers.get(key);
 
   if (!buffer || buffer.messages.length === 0) {
     return;
   }
 
-  // No log here - let AI section log instead
-
-  // Copy messages and clear buffer
   const batchMessages = [...buffer.messages];
   buffer.messages = [];
   buffer.timer = null;
 
+  const sessionId = batchMessages[0].sessionId;
+  const phone = batchMessages[0].sender.phone;
+
   try {
-    // Send batch to conversation handler
-    await flushConversation(phone, batchMessages);
+    await flushConversation(phone, batchMessages, sessionId);
   } catch (error) {
     logger.error("Failed to process buffer", {
       senderPhone: phone,
+      sessionId,
       error: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : undefined,
     });

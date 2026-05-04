@@ -19,6 +19,7 @@ export interface VoiceReplyContext {
   responseText: string;
   incomingMessageType: string;
   conversationHistory: Array<{ role: string; content: string }>;
+  sessionId: string;
 }
 
 export interface ElevenLabsResponse {

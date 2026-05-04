@@ -5,6 +5,7 @@
 import { getRedis } from "../../db/redis";
 import { sendTextMessage } from "../../wa/sendMessage";
 import { logger } from "../../utils/logger";
+import { getDefaultSessionId } from "../../config";
 import { Meeting } from "../types";
 import { buildDayReminderMessage, buildBeforeReminderMessage } from "./messages";
 
@@ -34,7 +35,7 @@ export async function sendTestDayReminder(phone: string): Promise<boolean> {
     const message = buildDayReminderMessage(meeting);
     const internationalPhone = toInternationalFormat(phone);
 
-    const sent = await sendTextMessage(internationalPhone, message);
+    const sent = await sendTextMessage(internationalPhone, message, getDefaultSessionId());
 
     if (sent) {
       logger.info("Test day reminder sent", { phone });
@@ -71,7 +72,7 @@ export async function sendTestBeforeReminder(phone: string, minutesBefore: numbe
     const message = buildBeforeReminderMessage(meeting, minutesBefore);
     const internationalPhone = toInternationalFormat(phone);
 
-    const sent = await sendTextMessage(internationalPhone, message);
+    const sent = await sendTextMessage(internationalPhone, message, getDefaultSessionId());
 
     if (sent) {
       logger.info("Test before-meeting reminder sent", { phone, minutesBefore });

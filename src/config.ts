@@ -7,6 +7,38 @@ import fs from "fs";
 import path from "path";
 import "dotenv/config";
 
+export interface WASessionConfig {
+  apiKey: string;
+  webhookSecret: string;
+  sessionName: string;
+  label?: string;
+}
+
+function loadWaSessions(): Map<string, WASessionConfig> {
+  const sessions = new Map<string, WASessionConfig>();
+
+  for (let i = 1; i <= 20; i++) {
+    const apiKey = process.env[`WA_SESSION_${i}_API_KEY`];
+    if (!apiKey) continue;
+
+    const sessionName = process.env[`WA_SESSION_${i}_SESSION_NAME`] || `session${i}`;
+    const webhookSecret = process.env[`WA_SESSION_${i}_WEBHOOK_SECRET`] || "";
+    const label = process.env[`WA_SESSION_${i}_LABEL`] || "";
+
+    sessions.set(sessionName, { apiKey, webhookSecret, sessionName, label: label || undefined });
+  }
+
+  if (sessions.size === 0) {
+    const apiKey = process.env.WA_SENDER_API_KEY || "";
+    const webhookSecret = process.env.WA_SENDER_WEBHOOK_SECRET || "";
+    if (apiKey) {
+      sessions.set("default", { apiKey, webhookSecret, sessionName: "default" });
+    }
+  }
+
+  return sessions;
+}
+
 // Load system prompt from external text file
 const systemPromptPath = path.join(__dirname, "prompts", "system_prompt.txt");
 let systemPrompt = "";
@@ -24,8 +56,7 @@ export const config = {
 
   // WA Sender
   waSenderBaseUrl: process.env.WA_SENDER_BASE_URL || "https://wasenderapi.com/api",
-  waSenderApiKey: process.env.WA_SENDER_API_KEY || "",
-  waSenderWebhookSecret: process.env.WA_SENDER_WEBHOOK_SECRET || "",
+  waSenderSessions: loadWaSessions(),
 
   // OpenAI
   openaiApiKey: process.env.OPENAI_API_KEY || "",
@@ -79,16 +110,39 @@ export const config = {
   summaryWebhookUrl: process.env.SUMMARY_WEBHOOK_URL || "",
 };
 
-// Validate required environment variables
 function validateConfig() {
-  const required = ["waSenderBaseUrl", "waSenderApiKey", "waSenderWebhookSecret", "openaiApiKey"];
-
-  const missing = required.filter((key) => !config[key as keyof typeof config]);
-
-  if (missing.length > 0) {
-    console.error(`Missing required environment variables: ${missing.join(", ")}`);
+  if (!config.openaiApiKey) {
+    console.error("Missing required: OPENAI_API_KEY");
     process.exit(1);
   }
+
+  if (config.waSenderSessions.size === 0) {
+    console.error("No WA Sender sessions configured. Set WA_SESSION_1_API_KEY or WA_SENDER_API_KEY");
+    process.exit(1);
+  }
+
+  if (!config.waSenderBaseUrl) {
+    console.error("Missing required: WA_SENDER_BASE_URL");
+    process.exit(1);
+  }
+}
+
+export function getSessionConfig(sessionId: string): WASessionConfig | null {
+  return config.waSenderSessions.get(sessionId) || null;
+}
+
+export function getDefaultSessionId(): string {
+  const first = config.waSenderSessions.keys().next().value;
+  return first || "default";
+}
+
+export function getSessionBySecret(signature: string): WASessionConfig | null {
+  for (const session of config.waSenderSessions.values()) {
+    if (session.webhookSecret === signature) {
+      return session;
+    }
+  }
+  return null;
 }
 
 validateConfig();

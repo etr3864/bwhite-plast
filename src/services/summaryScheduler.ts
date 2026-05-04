@@ -15,12 +15,17 @@ interface SchedulerEntry {
 
 const schedulers = new Map<string, SchedulerEntry>();
 
-export function resetSummaryTimer(phone: string): void {
+function schedulerKey(phone: string, sessionId: string): string {
+  return `${sessionId}:${phone}`;
+}
+
+export function resetSummaryTimer(phone: string, sessionId: string): void {
   if (!config.summaryEnabled || !config.summaryWebhookUrl) {
     return;
   }
 
-  const existing = schedulers.get(phone);
+  const key = schedulerKey(phone, sessionId);
+  const existing = schedulers.get(key);
 
   if (existing) {
     clearTimeout(existing.timer);
@@ -29,30 +34,31 @@ export function resetSummaryTimer(phone: string): void {
 
   const entry: SchedulerEntry = {
     timer: setTimeout(() => {
-      void triggerSummary(phone);
+      void triggerSummary(phone, sessionId);
     }, config.summaryDelayMinutes * 60 * 1000),
     messageCount: existing ? existing.messageCount : 1,
     lastSummaryMessageCount: existing?.lastSummaryMessageCount || 0,
   };
 
-  schedulers.set(phone, entry);
+  schedulers.set(key, entry);
 }
 
-async function triggerSummary(phone: string): Promise<void> {
-  const entry = schedulers.get(phone);
+async function triggerSummary(phone: string, sessionId: string): Promise<void> {
+  const key = schedulerKey(phone, sessionId);
+  const entry = schedulers.get(key);
   if (!entry) return;
 
   const messagesSinceLastSummary = entry.messageCount - entry.lastSummaryMessageCount;
 
   if (messagesSinceLastSummary < config.summaryMinMessages) {
-    schedulers.delete(phone);
+    schedulers.delete(key);
     return;
   }
 
   try {
-    await generateAndSendSummary(phone);
+    await generateAndSendSummary(phone, sessionId);
     entry.lastSummaryMessageCount = entry.messageCount;
-    logger.info("Summary sent", { phone, messages: messagesSinceLastSummary });
+    logger.info("Summary sent", { phone, sessionId, messages: messagesSinceLastSummary });
   } catch (error) {
     logger.error("Summary failed", {
       phone,
@@ -60,18 +66,20 @@ async function triggerSummary(phone: string): Promise<void> {
     });
   }
 
-  schedulers.delete(phone);
+  schedulers.delete(key);
 }
 
-export function clearSummaryTimer(phone: string): void {
-  const entry = schedulers.get(phone);
+export function clearSummaryTimer(phone: string, sessionId: string): void {
+  const key = schedulerKey(phone, sessionId);
+  const entry = schedulers.get(key);
   if (entry) {
     clearTimeout(entry.timer);
-    schedulers.delete(phone);
+    schedulers.delete(key);
   }
 }
 
-export function getSchedulerInfo(phone: string): { messageCount: number } | null {
-  const entry = schedulers.get(phone);
+export function getSchedulerInfo(phone: string, sessionId: string): { messageCount: number } | null {
+  const key = schedulerKey(phone, sessionId);
+  const entry = schedulers.get(key);
   return entry ? { messageCount: entry.messageCount } : null;
 }

@@ -5,7 +5,7 @@
 import { Request, Response } from "express";
 import { WAWebhookPayload, WAMessage } from "../types/whatsapp";
 import { logger } from "../utils/logger";
-import { config } from "../config";
+import { config, getSessionConfig } from "../config";
 import { verifyWebhookSignature } from "../utils/webhookAuth";
 import { normalizeIncoming, hasMedia } from "./normalize";
 import { decryptMedia } from "./decryptMedia";
@@ -37,6 +37,7 @@ export function handleWhatsAppWebhook(req: Request, res: Response): void {
   try {
     const payload = req.body as WAWebhookPayload;
     const signature = req.headers["x-webhook-signature"] as string;
+    const sessionId = payload.sessionId || "default";
 
     if (!signature) {
       logger.warn("Missing webhook signature");
@@ -44,17 +45,20 @@ export function handleWhatsAppWebhook(req: Request, res: Response): void {
       return;
     }
 
-    const rawBody = JSON.stringify(req.body);
-    const isValid = verifyWebhookSignature(rawBody, signature);
+    const isValid = verifyWebhookSignature(signature, sessionId);
 
     if (!isValid) {
       if (config.skipWebhookVerification) {
-        logger.warn("Invalid signature but verification skipped");
+        logger.warn("Invalid signature but verification skipped", { sessionId });
       } else {
-        logger.error("Invalid webhook signature");
+        logger.error("Invalid webhook signature", { sessionId });
         res.status(401).json({ error: "Invalid signature" });
         return;
       }
+    }
+
+    if (!getSessionConfig(sessionId)) {
+      logger.warn("Unknown session, checking if signature matches any", { sessionId });
     }
 
     res.status(200).json({ success: true });
@@ -67,8 +71,8 @@ export function handleWhatsAppWebhook(req: Request, res: Response): void {
   }
 }
 
-async function processMessage(message: WAMessage): Promise<void> {
-  const normalized = normalizeIncoming(message);
+async function processMessage(message: WAMessage, sessionId: string): Promise<void> {
+  const normalized = normalizeIncoming(message, sessionId);
   const phone = normalized.sender.phone;
   const messageText = normalized.message.text;
 
@@ -86,7 +90,8 @@ async function processMessage(message: WAMessage): Promise<void> {
       await setOptOut(phone, optOutDetection.detectedPhrase);
       await sendTextMessage(
         phone,
-        "הבנתי, הסרתי אותך מרשימת התפוצה. אם תרצה לחזור ולשוחח, פשוט שלח לי הודעה בכל עת!"
+        "הבנתי, הסרתי אותך מרשימת התפוצה. אם תרצה לחזור ולשוחח, פשוט שלח לי הודעה בכל עת!",
+        sessionId
       );
       logger.info("Opt-out processed", { phone });
       return;
@@ -97,9 +102,9 @@ async function processMessage(message: WAMessage): Promise<void> {
   const isImage = message.message?.imageMessage;
 
   if (isAudio) {
-    logger.info("Voice message received", { phone });
+    logger.info("Voice message received", { phone, sessionId });
 
-    const audioUrl = await decryptMedia(message);
+    const audioUrl = await decryptMedia(message, sessionId);
     if (audioUrl) {
       const transcription = await transcribeAudio(audioUrl);
       if (transcription) {
@@ -109,23 +114,25 @@ async function processMessage(message: WAMessage): Promise<void> {
       } else {
         logger.warn("Transcription failed", { phone });
         await sendTextMessage(
-          normalized.sender.phone,
-          "מצטער, לא הצלחתי להבין את ההקלטה הקולית. אנא נסה לשלוח שוב או כתוב בטקסט."
+          phone,
+          "מצטער, לא הצלחתי להבין את ההקלטה הקולית. אנא נסה לשלוח שוב או כתוב בטקסט.",
+          sessionId
         );
         return;
       }
     } else {
       logger.warn("Audio decryption failed", { phone });
       await sendTextMessage(
-        normalized.sender.phone,
-        "מצטער, נתקלתי בבעיה בקבלת ההקלטה הקולית. אנא נסה לשלוח שוב."
+        phone,
+        "מצטער, נתקלתי בבעיה בקבלת ההקלטה הקולית. אנא נסה לשלוח שוב.",
+        sessionId
       );
       return;
     }
   } else if (isImage) {
-    logger.info("Image received", { phone });
+    logger.info("Image received", { phone, sessionId });
 
-    const imageUrl = await decryptMedia(message);
+    const imageUrl = await decryptMedia(message, sessionId);
     if (imageUrl) {
       const caption = normalized.message.text;
       const analysis = await analyzeImage(imageUrl, caption);
@@ -145,8 +152,9 @@ async function processMessage(message: WAMessage): Promise<void> {
           normalized.message.text = `[תמונה: ${caption}]\n\n(לא הצלחתי לנתח את התמונה, אבל ראיתי את הכיתוב)`;
         } else {
           await sendTextMessage(
-            normalized.sender.phone,
-            "מצטער, לא הצלחתי לנתח את התמונה. אנא נסה לשלוח שוב או תאר במילים מה בתמונה."
+            phone,
+            "מצטער, לא הצלחתי לנתח את התמונה. אנא נסה לשלוח שוב או תאר במילים מה בתמונה.",
+            sessionId
           );
           return;
         }
@@ -154,19 +162,21 @@ async function processMessage(message: WAMessage): Promise<void> {
     } else {
       logger.warn("Image decryption failed", { phone });
       await sendTextMessage(
-        normalized.sender.phone,
-        "מצטער, נתקלתי בבעיה בקבלת התמונה. אנא נסה לשלוח שוב."
+        phone,
+        "מצטער, נתקלתי בבעיה בקבלת התמונה. אנא נסה לשלוח שוב.",
+        sessionId
       );
       return;
     }
   } else {
     logger.info("Message received", { 
       phone, 
+      sessionId,
       text: normalized.message.text?.substring(0, 50) 
     });
 
     if (hasMedia(message)) {
-      const mediaUrl = await decryptMedia(message);
+      const mediaUrl = await decryptMedia(message, sessionId);
       if (mediaUrl) {
         normalized.message.mediaUrl = mediaUrl;
       }
@@ -179,6 +189,7 @@ async function processMessage(message: WAMessage): Promise<void> {
 async function processWebhook(payload: WAWebhookPayload): Promise<void> {
   try {
     const message = payload.data.messages;
+    const sessionId = payload.sessionId || "default";
 
     if (!message) {
       return;
@@ -209,7 +220,7 @@ async function processWebhook(payload: WAWebhookPayload): Promise<void> {
       processedMessages.delete(messageId);
     }, MESSAGE_CACHE_TTL);
 
-    await processMessage(message);
+    await processMessage(message, sessionId);
   } catch (error) {
     logger.error("Webhook processing failed", {
       error: error instanceof Error ? error.message : String(error),
